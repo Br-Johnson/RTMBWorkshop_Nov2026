@@ -1,0 +1,163 @@
+---
+title: "Homework"
+format: html
+---
+
+$$
+\begin{aligned}
+R_t &= S_t \, e^{\alpha - \gamma S_t} \\
+\log(R_t / S_t) &= \alpha - \gamma S_t + \varepsilon_t, \quad \varepsilon_t \sim N(0, \sigma^2) \\
+\mu_t &= \alpha - \gamma S_t \\
+\text{nll} &= -\sum_{t=1}^{n} \log N(\log(R_t / S_t) \mid \mu_t, \sigma^2)
+\end{aligned}
+$$
+
+```{r, setup}
+sox <- read.csv(here::here("data", "sockeye", "SRDATA2026 1.csv"))
+stock <- read.csv(here::here("data", "sockeye", "FC_StockInfo 2.csv"))
+sox <- sox |> merge(stock, by = "PopID")
+
+sox <- tidyr::drop_na(sox, spawners, recruits)
+
+X <- model.matrix(~ 0 + PopName + spawners:PopName, data = sox)
+npar <- ncol(X)
+
+stock_id <- as.integer(as.factor(sox$PopName))
+```
+
+```{r}
+# simple case with one ricker curve for all 19 stocks
+lh <- function(pars, data) {
+  alpha <- pars["alpha"]
+  gamma <- pars["gamma"]
+  log_sigma <- pars["log_sigma"]
+  sigma <- exp(log_sigma)
+
+  # predict log recruits per spawner (mu)
+  spawners <- data$spawners
+  recruits <- data$recruits
+  # mu is a prediction of the log(recruits per spawner)
+  mu <- alpha - gamma * spawners
+  # Calclulate observed valules
+  obs <- log(recruits / spawners)
+  # calulate log probabilities
+  probs <- dnorm(obs - mu, mean = 0, sd = sigma, log = TRUE)
+  # sum likelihoods and flip the sign to get negative log likelihood
+  nll <- sum(probs) * -1
+
+  return(nll)
+}
+# Run nlminb optimizer my lh function as the objective function to optimize the lowest value for
+
+pars_init <- c(alpha = 0, gamma = 0, log_sigma = 0)
+fit0 <- nlminb(pars_init, lh, data = sox)
+```
+
+```{r}
+# Compare to lm
+
+lm_fit <- lm(log(recruits / spawners) ~ spawners, data = sox)
+
+n <- nrow(sox) # number of observations (after dropping NAs)
+k <- 2 # coefficients estimated: alpha and gamma
+sigma_ml <- exp(fit0$par["log_sigma"])
+sigma_corrected <- sigma_ml * sqrt(n / (n - k))
+
+sigma_corrected - sigma(lm_fit) # should be about 0
+
+```
+
+```{r}
+## Vary spawners
+lh <- function(pars, X, data, stock_id) {
+  beta <- pars[1:(length(pars) - 1)]
+  log_sigma <- pars[length(pars)]
+  sigma <- exp(log_sigma)
+
+  # predict log recruits per spawner (mu)
+  spawners <- data$spawners
+  recruits <- data$recruits
+  # mu is a prediction of the log(recruits per spawner)
+  mu <- X %*% beta
+
+  # Calclulate observed valules
+  obs <- log(recruits / spawners)
+  # calulate log probabilities
+  probs <- dnorm(obs - mu, mean = 0, sd = sigma, log = TRUE)
+  # sum likelihoods and flip the sign to get negative log likelihood
+  nll <- sum(probs) * -1
+
+  return(nll)
+}
+
+pars_init <- rep(0, npar + 1)
+fit1 <- nlminb(
+  pars_init,
+  lh,
+  control = list(rel.tol = 1e-14),
+  data = sox,
+  X = X
+)
+
+lm_fit1 <- lm(log(recruits / spawners) ~ 0 + X, data = sox)
+
+beta_ml <- fit1$par[1:npar]
+max(abs(coef(lm_fit1) - beta_ml)) # biggest difference; should be near 0
+
+# Setting rel.to smaller number doesnt help
+# Might need to normalize spawners numbers since some of them are so small
+
+```
+
+```{r}
+## Vary spawners
+lh <- function(pars, X, data, stock_id) {
+  beta <- pars[1:ncol(X)]
+  log_sigma <- pars[(ncol(X) + 1):length(pars)]
+  sigma <- exp(log_sigma)
+
+  # predict log recruits per spawner (mu)
+  spawners <- data$spawners
+  recruits <- data$recruits
+  # mu is a prediction of the log(recruits per spawner)
+  mu <- X %*% beta
+
+  # Calclulate observed valules
+  obs <- log(recruits / spawners)
+  # calulate log probabilities
+  probs <- dnorm(obs - mu, mean = 0, sd = sigma[stock_id], log = TRUE)
+  # sum likelihoods and flip the sign to get negative log likelihood
+  nll <- sum(probs) * -1
+
+  return(nll)
+}
+
+pars_init <- rep(0, npar + max(stock_id))
+fit2 <- nlminb(
+  pars_init,
+  lh,
+  control = list(rel.tol = 1e-14, eval.max = 1e4, iter.max = 1e4),
+  data = sox,
+  X = X,
+  stock_id = stock_id
+)
+
+lm_fit2 <- lm(log(recruits / spawners) ~ 0 + X, data = sox)
+
+beta_ml <- fit2$par[1:npar]
+max(abs(coef(lm_fit2) - beta_ml)) # biggest difference; should be near 0
+```
+
+Here's a summary to paste at the bottom of your homework:
+
+## Notes: what I explored and found
+
+**Data prep** - Missing values (39 recruits, 44 spawners) made the nll NA, so the optimizer never moved off the starting values. - Fix: drop them once, before fitting: `tidyr::drop_na(sox, spawners, recruits)`.
+
+**One Ricker curve for all stocks** - My nll + `nlminb` matched `lm` exactly: alpha = 2.0093, gamma = 0.7606 (lm slope = -gamma). - The ML sigma (1.199) is slightly smaller than lm's (1.2): ML divides by n, lm by n - k. - Correction: `sigma_ml * sqrt(n / (n - k))`, with k = 2; the difference from lm was \~1e-10 (effectively 0).
+
+**Separate alpha and gamma per stock (design matrix, 38 betas)** - `X <- model.matrix(~ 0 + PopName + spawners:PopName, data = sox)`; `mu <- X %*% beta`. - `nlminb` stopped early ("relative convergence", 141 iterations); betas differed from lm by up to 0.138. - Tighter `rel.tol = 1e-14` didn't help ("singular convergence"): a nearly flat valley, since small stocks need huge slopes.
+
+**Separate sigma per stock (57 parameters)** - `stock_id <- as.integer(factor(sox$PopName))`; `sd = sigma[stock_id]` in dnorm. - First run hit the function evaluation limit (difference 182.6). - With `eval.max = 1e4, iter.max = 1e4`, the difference dropped to 0.0043, still "singular convergence".
+
+**Takeaways / fixes to try** - Rescale spawners per stock (divide by stock mean), then convert the slopes back. - Finite-difference nudging struggles in flat, many-parameter valleys; RTMB's exact gradients (automatic differentiation) should fix this.

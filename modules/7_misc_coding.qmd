@@ -27,8 +27,10 @@ execute:
 
 library(ggplot2)
 library(dplyr)
-sox <- read.csv("../data/sockeye/SRDATA2026 1.csv")
-stock <- read.csv("../data/sockeye/FC_StockInfo 2.csv")
+# Paths start at the project root via here::here(), so this code runs in the
+# Positron or RStudio console and when Quarto renders from this folder.
+sox <- read.csv(here::here("data", "sockeye", "SRDATA2026 1.csv"))
+stock <- read.csv(here::here("data", "sockeye", "FC_StockInfo 2.csv"))
 sox <- sox %>% left_join(stock, by = "PopID")
 sox <- sox %>% filter(!is.na(spawners), !is.na(recruits))
 sox <- sox %>% group_by(PopName) %>% mutate(sd_spawners = sd(spawners),  spawners_scaled = spawners/sd_spawners) %>% ungroup() %>% mutate(logRS = log(recruits/spawners))

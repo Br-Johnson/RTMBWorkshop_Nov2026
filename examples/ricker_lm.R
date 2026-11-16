@@ -6,10 +6,11 @@ library(ggplot2)
 library(dplyr)
 
 ## Load data:
-## Path to folder...
-setwd(dirname(rstudioapi::getSourceEditorContext()$path))
-sox <- read.csv("../data/sockeye/SRDATA2026 1.csv")
-stock <- read.csv("../data/sockeye/FC_StockInfo 2.csv")
+## Paths start at the project root via here::here(), so this script runs the
+## same in Positron, RStudio, or Rscript. It no longer calls setwd() with
+## rstudioapi, which only works when the script is open in an RStudio editor.
+sox <- read.csv(here::here("data", "sockeye", "SRDATA2026 1.csv"))
+stock <- read.csv(here::here("data", "sockeye", "FC_StockInfo 2.csv"))
 sox <- sox %>% left_join(stock, by = "PopID")
 sox <- sox %>% filter(!is.na(spawners))
 

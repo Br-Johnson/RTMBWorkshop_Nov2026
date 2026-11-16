@@ -13,8 +13,10 @@ format:
 We will start with some sockeye stock recruit data from the Fraser River. There are a total of 19 stocks, values are in millions of fish, and note that these are not necessarily official numbers and may be updated after 2020. Let's load the data, which may have a different path depending on how you have configured your R console, or Rstudio.
 
 ```{r, warning = FALSE, eval = FALSE}
-sox <- read.csv("../data/sockeye/SRDATA2026 1.csv")
-stock <- read.csv("../data/sockeye/FC_StockInfo 2.csv")
+# Paths start at the project root via here::here(), so this code runs in the
+# Positron or RStudio console and when Quarto renders from this folder.
+sox <- read.csv(here::here("data", "sockeye", "SRDATA2026 1.csv"))
+stock <- read.csv(here::here("data", "sockeye", "FC_StockInfo 2.csv"))
 sox <- sox |> merge(stock, by = "PopID")
 
 library(ggplot2)

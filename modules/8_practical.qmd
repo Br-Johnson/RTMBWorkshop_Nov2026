@@ -36,9 +36,11 @@ library(ggplot2)
 library(dplyr)
 library(RTMB)
 
-sox <- read.csv("../data/sockeye/SRDATA2026 1.csv")
-stock <- read.csv("../data/sockeye/FC_StockInfo 2.csv")
-covariates <- read.csv("../data/sockeye/FC_Environmental_Data_2026_Std_Offset_Real.csv")
+# Paths start at the project root via here::here(), so this code runs in the
+# Positron or RStudio console and when Quarto renders from this folder.
+sox <- read.csv(here::here("data", "sockeye", "SRDATA2026 1.csv"))
+stock <- read.csv(here::here("data", "sockeye", "FC_StockInfo 2.csv"))
+covariates <- read.csv(here::here("data", "sockeye", "FC_Environmental_Data_2026_Std_Offset_Real.csv"))
 sox <- sox %>% left_join(stock, by = "PopID")
 sox <- sox %>% left_join(covariates, by = "yr")
 sox <- sox %>% filter(!is.na(spawners), !is.na(recruits))
