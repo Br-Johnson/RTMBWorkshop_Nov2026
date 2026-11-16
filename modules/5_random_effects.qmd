@@ -153,17 +153,60 @@ dnorm(0.5, 1, sqrt(0.5^2+0.25^2)) ## Known Marginal
 
 ## Laplace Approximation
 
-- We approximate the density in terms of the random effects by a Taylor series expansion
+- Consider the function $f(x)$, that is complex and hard to integrate
 
-- Integral tricks allow us to approximate that as a Gaussian
+- If we make some assumptions that it is approximately Guassian,
 
-- Requires a smooth single peak to the likelihood distribution
+$$
+  f(x) \approx g(\widehat{x}) \sqrt{2\pi}\sigma N(\widehat{x}, \sigma^2),
+$$
+where $\widehat{x}$ is the mode of $x$, and $\sigma = \frac{1}{-\log(f(x))''_\widehat{x}}$, the second derivative evaluated at the mode. 
 
-- Requires fast + accurate gradient/hessian computation
+- This function is easy to integrate as a Normal distribution and
 
-- With more data, in theory the likelihood is smooth and has a sharp peak.
+\begin{align}
+  \int_\infty^\infty f(x)dx & \approx g(\widehat{x}) \sqrt{2\pi}\sigma N(\widehat{x}, \sigma^2)\\
+  & = g(\widehat{x}) \sqrt{2\pi}\sigma
+\end{align}
 
-- Steps required are
+::: {#my-long-container style="height: 400px; border: 1px solid #ccc;"}
+```{r}
+#| echo: false
+#| fig-width: 5
+#| fig-height: 4
+#| out-width: "60%"
+#| fig-align: "center"
+
+a = 7.5
+b = 1
+x <- seq(-2, 4, by = 0.05)
+lgx <- \(x, a, b){
+    dgamma(exp(x), a, b, log = TRUE) + x
+}
+F <- MakeTape(\(x){-lgx(x, a, b)}, 0.1)
+opt <- F$newton(1)
+xhat <- opt(numeric(0))
+Fj <- F$jacfun()
+sig <- drop(sqrt(1/Fj$jacobian(xhat)))
+apprx <- \(x, xhat, sigma, a=1, b=1){-(x-xhat)^2/(2*sigma^2) + lgx(x, a, b)}
+
+plot(x, lgx(x, a, b), type = "l", xlab = "x", ylab = "Log Density")
+abline(v = xhat, col = 'red', lty = 2)
+lines(x, apprx(x, xhat, sig, a, b), col = 'blue')
+```
+:::
+
+## Laplace Approximation 
+
+- Requires:
+  * a smooth single peak to the likelihood distribution
+  * fast + accurate gradient/hessian computation
+  
+- If highly skewed then less accurate
+
+- With more data, the likelihood is smooth and has a sharp peak.
+
+- Steps are
   * Maximize $f(\textbf{x}, \textbf{u})$ with respect to the random effects, $\textbf{u}$, with fixed parameter values of $\boldsymbol{\theta}$
   * Compute Hessian and return approximate marginal likelihood
 

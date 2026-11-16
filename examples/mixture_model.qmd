@@ -1,0 +1,154 @@
+---
+title: "Fitting Mixture Models"
+format: 
+  html:
+    self-contained: true
+execute:
+  warning: false
+  message: false # Optional: also hides messages
+---
+
+A mixture model is a clustering technique for unlabeled data that might have some unknown grouping according to some set of observed characteristics. Suppose that we measure the hydroacoustic length 4 different migratory salmon species. If those lengths, $x$, are normally distributed and if we knew the species ID, $z$, then the distribution of the data is simple,
+
+$$
+  x|z \sim N(\mu_z, \sigma_z^2),
+$$
+for a mean length $\mu_z$ and standard deviation $\sigma_z$. However, similar to other concepts explored in this course, we do not observe $z$, and need to marginalize it. In this case,
+
+$$
+  z \sim \text{Categorical}(\pi_1,\ldots,\pi_4).
+$$
+Then the distribution of $x$ is
+
+$$
+  f(x) = \sum_{k=1}^4 f(z=k)f(x|z=k) = \sum_{k=1}^4 \pi_k N(x, \mu_k, \sigma_k^2). 
+$$
+
+This is often referred to as a Gaussian mixture model. However, direct maximization of the log likelihood to fit the mixing proportions is not possible due to the sum within a log. Let's code this model up and see how it fits on some simulated data.
+
+```{r}
+#| echo: true
+
+library(RTMB)
+
+K <- 4
+nobs <- 100
+mu <- c(35,50,59,72)
+sigma <- c(1.5, 2, 2.5, 7)
+prop <- c(0.1, 0.45, 0.3, 0.15)
+z <- sample(x = 1:K, size = nobs, replace = TRUE, prob = prop)
+x <- rnorm(nobs, mu[z], sigma[z])
+
+itrans <- function(lp){
+  p <- c(exp(lp), 1)
+  p <- p/sum(p)
+}
+
+negll <- function(pars){
+  getAll(pars)
+  prob = itrans(logitp)
+  sigma <- exp(logsigma)
+  REPORT(prob)
+  REPORT(sigma)
+  
+  ll <- 0
+  for( i in 1:nobs ){
+    pobs <- sum(prob*dnorm(x[i], mu, sigma))  ## Numerical Issues?
+    ll <- ll + log(pobs)
+  }
+  -ll  
+}
+
+param <- list(logitp = c(0,0,0), mu = exp(rnorm(K, 3, 0.25)), logsigma = numeric(K)+2)
+obj <- MakeADFun(negll, param, silent = TRUE)
+fit <- nlminb(obj$par, obj$fn, obj$gr)
+pest <- obj$report()$prob
+muest <- obj$env$parList(fit$par)$mu
+sigmaest <- obj$report()$sigma
+```
+
+This looks terrible. Surely the data aren't this awful. We will compare with a standard mixture model package in R.
+
+```{r}
+library(mixtools)
+fitmix <- normalmixEM(x, lambda = itrans(param$logitp), 
+  mu = param$mu, sigma = exp(param$logsigma))
+fitmix$lambda
+pest
+```
+
+Wow, okay maybe not perfect but way better for the same starting values. The R package isn't doing direct maximization. It is using the EM algorithm to iteratively solve this problem. Let's write our own version of this in RTMB. However, this model could be fit as is using `tmbstan` and HMC without writing any new code, except adding some prior distributions.
+
+## Expectation Maximization
+
+Direct maximization of mixture models can be challenging due to a multimodal likelihood. Instead, we employ the expectation-maximization (EM) algorithm. This is a two-step algorithm written in R package RTMB.
+If we reintroduce the $z$ term as an augmented variable then given a set of parameter values from iteration $t-1$ of the algorithm, we know that the posterior $z|x$ is
+$$
+P_{(t)}(z = k|x) = \frac{P_{(t-1)}(z = k) f_{(t-1)}(x|z = k)}{\sum_{k=1}^K P_{(t-1)}(z = k) f_{(t-1)}(x|z = k)},
+$$
+where ${(t-1)}$ indicates the function is evaluated at parameter values from the time step $t-1$ of the algorithm. Once we have evaluated the posterior probabilities given the current state of the algorithm, we then compute the objective function $Q_t(\mathbf{\theta}_t|\widehat{\mathbf{\theta}}_{t-1})$, for the parameters $\mathbf{\theta}$,
+
+\begin{align}
+  Q(\mathbf{\theta}_t|\widehat{\mathbf{\theta}}_{t-1})  &= \sum_{i=1}^n \mathbb{E}_{z_i|\widehat{\mathbf{\theta}}_{t-1}}\log\{f(x_i)\},\\
+&= \sum_{i=1}^n \sum_{k=1}^K \log\{P(z_i=k)\} + log\{f(x_i|z_i=k)\} P_{(t)}(z_i = k|x_i).
+\end{align}
+
+For each $t$, we find $\widehat{\mathbf{\theta}}_t = \text{argmax}_{\mathbf{\theta}_t} Q(\mathbf{\theta}_t|\widehat{\mathbf{\theta}}_{t-1})$ until the log-likelihood between each iteration stays approximately equal to some small threshold value.
+
+Let's start with some basic code for to compute the posterior probability of each assignment. Then we will build a nested inner and outer function. The outer computes the posterior and passes it to the inner which is the objective function. We use the `Newton` internal optimizer within the tape to do the inner optimization. Once we have a new set of parameters we loop through and call outer/inner until convergence is reached.
+
+```{r}
+#| echo: true
+
+calc_posterior <- function(x, prob, mu, sigma){
+  nobs <- length(x)
+  K <- length(prob)
+  post <- matrix(0, nrow = nobs, ncol = K)
+  for( i in 1:length(x) ){
+    post[i,] <- prob*dnorm(x[i], mu, sigma)
+    post[i,] <- post[i,]/sum(post[i,])
+  }
+  post
+}
+
+outer <- function(pars_outer){
+  prob <- itrans(pars_outer$logitp)
+  sigma <- exp(pars_outer$logsigma)
+  mu <- pars_outer$mu
+  nobs <- length(x)
+  post <- calc_posterior(x, prob, mu, sigma)
+  
+  inner <- function(pars_inner){
+    prob_inner <- itrans(pars_inner$logitp)
+    sigma_inner <- exp(pars_inner$logsigma)
+    mu_inner <- pars_inner$mu
+    lprob_inner <- log(prob_inner)
+
+    ll <- 0
+    for( i in 1:nobs){
+      ll <- ll + sum(post[i,]*(lprob_inner + dnorm(x[i], mu_inner, sigma_inner, log = TRUE)))
+    }
+    return(-ll)
+  }
+  start <- (lapply(pars_outer, RTMB:::getValues))
+  F <- MakeTape(inner, start)
+  Newton <- F$newton(1:length(F$par()), maxit = 1000)
+  pars_opt <- Newton(numeric(0))
+  pars_opt
+}
+
+start <- do.call('c', param)
+EM <- MakeTape(outer, param)
+EM$simplify()
+nll_last <- obj$fn(start)
+newpars <- EM(param)
+nll_new <- obj$fn(newpars)
+while(abs(nll_new - nll_last) > 1e-6){
+  nll_last <- nll_new
+  newpars <- EM(newpars)
+  nll_new <- obj$fn(newpars)
+}
+obj$env$parList(newpars)
+fitmix$lambda - obj$report(newpars)$prob    ## Pretty close!
+```
+
