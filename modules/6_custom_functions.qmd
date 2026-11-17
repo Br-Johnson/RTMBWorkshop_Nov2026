@@ -19,10 +19,12 @@ execute:
 
 ## Write a Custom Distribution
 
+- Check first: `RTMB` already has `dlnorm`, `dlgamma`, `dnbinom2`, `dtweedie` and more (see `?RTMB::Distributions`)
 - If `RTMB` doesn't have the distribution you want
 - Check `RTMBdist` for additional distributions
 - Still want their simulation functionality
 - Can write a special function that RTMB will recognize for simulation
+- Anything reached with `RTMB:::` is internal to the package and can change between versions
 
 ## Example Logit Normal Distribution
 
@@ -113,7 +115,7 @@ $$
 - The determinant of the Jacobian (in 1D absolute value of derivative)
 
 $$
-  |\frac{g(p)}{dp}| = p(1-p)
+  \Big|\frac{dp}{dx}\Big| = p(1-p)
 $$
 
 - The other direction, it is just the inverse, $\frac{1}{p(1-p)}$
@@ -179,18 +181,15 @@ library(RTMB)
 soxch <- sox %>% filter(PopName == "Chilko")
 
 dlognorm <- function(x, mean, sd, log = FALSE){
+  ## Simulation: RTMB passes a 'simref' to be filled in. Check for it first,
+  ## before x is used for anything else, then stop.
+  if (inherits(x, "simref")) {
+    x[] <- rlognorm(length(x), mean, sd)
+    return(0)
+  }
+
   y <- log(x)
   logpdens <- dnorm(y, mean, sd, log = TRUE) - y # -y == log(1/x)
-  
-  if (inherits(x, "simref")) {
-    return(RTMB:::dGenericSim(
-      "dlognorm",
-      x = x,
-      mean = mean,
-      sd = sd,
-      log = log
-    ))
-  }
   
   if(log) return(logpdens)
   return(exp(logpdens))
@@ -211,28 +210,34 @@ rlognorm <- function(n, mean, sd){
 param <- list(logsigma = 0, alpha = 0, logbeta = 0)
 soxch$RS <- soxch$recruits/soxch$spawners
 
-negll <- function(pars){
-  getAll(pars, soxch)
-  mu <- alpha - exp(logbeta)*spawners
-  sigma <- exp(logsigma)
-  RS <- OBS(RS)
-  
-  if(lognormal == TRUE){
-    nll <- -sum(dlognorm(RS, mu, sigma, log = TRUE))
-  }else{
-    nll <- -sum(dnorm(log(RS), mu, sigma, log = TRUE))
+## The choice of likelihood is fixed when the function is made. A global on/off
+## switch would not be: obj$simulate() and obj$report() re-run the R code later
+## and would follow whatever the switch is set to by then.
+make_negll <- function(lognormal){
+  function(pars){
+    getAll(pars, soxch)
+    mu <- alpha - exp(logbeta)*spawners
+    sigma <- exp(logsigma)
+    RS <- OBS(RS)
+    
+    if(lognormal){
+      nll <- -sum(dlognorm(RS, mu, sigma, log = TRUE))
+    }else{
+      nll <- -sum(dnorm(log(RS), mu, sigma, log = TRUE))
+    }
+    return(nll)
   }
-  return(nll)
 }
 
-lognormal <- TRUE
-obj <- MakeADFun(negll, param, silent = TRUE)
-# obj$fn()
+obj <- MakeADFun(make_negll(lognormal = TRUE), param, silent = TRUE)
+obj2 <- MakeADFun(make_negll(lognormal = FALSE), param, silent = TRUE)
 
-lognormal <- FALSE
-obj2 <- MakeADFun(negll, param, silent = TRUE)
-# obj2$fn()
+obj$fn(obj$par) - obj2$fn(obj2$par)   ## the two differ by a constant:
+sum(log(soxch$RS))                      ## the Jacobian term, with no parameters in it
 ```
+
+- Same estimates either way.
+- The constant matters when models fitted on different scales are compared, for example by AIC.
 
 ## Checking Simulation
 
@@ -245,10 +250,10 @@ obj2 <- MakeADFun(negll, param, silent = TRUE)
 #| out-width: "75%"
 #| fig-align: "center"
 
-sim1 <- sapply(1:1000, FUN = function(x){obj$simulate()$RS})
+sim1 <- sapply(1:1000, FUN = function(x){obj$simulate(obj$par)$RS})
 mu1 <- apply(sim1, 1, mean)
 
-sim2 <- sapply(1:1000, FUN = function(x){obj2$simulate()$RS})
+sim2 <- sapply(1:1000, FUN = function(x){obj2$simulate(obj2$par)$RS})
 mu2 <- apply(sim2, 1, mean)
 
 plot(mu1, mu2)
@@ -271,7 +276,9 @@ abline(0, 1, col = 'red', lty = 2)
 ```{r}
 #| echo: true
 
-dlgamma <- function(x, shape, rate, log = FALSE){
+## Density of x = log(y) when y is gamma(shape, rate): gamma density times the Jacobian.
+## (RTMB has its own dlgamma(x, shape, scale); ours uses a rate, so it gets its own name.)
+dloggamma <- function(x, shape, rate, log = FALSE){
   y <- exp(x)
   logpdens <- dgamma(y, shape = shape, rate = rate, log = TRUE) + x 
   
@@ -279,43 +286,44 @@ dlgamma <- function(x, shape, rate, log = FALSE){
   return(exp(logpdens))
 }
 
+set.seed(10)
 lambda <- rgamma(100, 5, 1)
 count <- rpois(100, lambda)
 
-param <- list(logshape = 0, lograte = 0, logre = numeric(100))
+make_negll <- function(model){
+  function(pars){
+    getAll(pars)
+    a <- exp(logshape)
+    b <- exp(lograte)
 
-negll <- function(pars){
-  getAll(pars)
-  a <- exp(logshape)
-  b <- exp(lograte)
-
-  nll <- 0
-  if(nb == TRUE){
-    nll <- nll - sum(dnbinom(count, a, b/(1+b), log = TRUE))
-  }else{
+    if(model == "negative binomial"){   ## the exact answer: random effect integrated out by hand
+      return(-sum(dnbinom(count, a, b/(1+b), log = TRUE)))
+    }
     mu <- exp(logre)
-    if(lgamma == TRUE){
-      nll <- nll - sum(dlgamma(logre, a, b, log = TRUE))
-    }else{
-      nll <- nll - sum(dgamma(mu, a, b, log = TRUE))
+    if(model == "with Jacobian"){
+      nll <- -sum(dloggamma(logre, a, b, log = TRUE))
+    }else{                              ## "without Jacobian"
+      nll <- -sum(dgamma(mu, a, b, log = TRUE))
     }
     nll <- nll - sum(dpois(count, mu, log = TRUE))
+    return(nll)
   }
-  return(nll)
 }
 
-lgamma <- TRUE
-nb <- FALSE
-obj <- MakeADFun(negll, param, random = "logre", silent = TRUE)
-# obj$fn()
+fit_model <- function(model){
+  param <- list(logshape = log(2), lograte = 0)
+  random <- NULL
+  if(model != "negative binomial"){
+    param$logre <- log(count + 0.5)
+    random <- "logre"
+  }
+  obj <- MakeADFun(make_negll(model), param, random = random, silent = TRUE)
+  fit <- nlminb(obj$par, obj$fn, obj$gr)
+  c(shape = exp(fit$par[["logshape"]]), rate = exp(fit$par[["lograte"]]))
+}
 
-lgamma <- FALSE
-obj2 <- MakeADFun(negll, param, random = "logre", silent = TRUE)
-# obj2$fn()
-
-nb <- TRUE
-obj3 <- MakeADFun(negll, list(logshape = 0, lograte = 0), silent = TRUE)
-# obj3$fn()
+## Data were simulated with shape = 5, rate = 1
+round(sapply(c("negative binomial", "with Jacobian", "without Jacobian"), fit_model), 2)
 ```
 
 ## ADjoint
@@ -381,6 +389,44 @@ LamW <- ADjoint(W, dW)
 F <- MakeTape(function(x)sum(LamW(x)), numeric(3))
 ```
 
+- `RTMBdist::lambertW()` is a ready-made version.
+
+## Using It: Reference Points
+
+- For the Ricker model $R = S e^{\alpha - \beta S}$:
+  * $S_{max} = 1/\beta$ spawners give the most recruits, and the unfished equilibrium is $\alpha/\beta$
+  * $U_{MSY} = 1 - W(e^{1-\alpha})$ and $S_{MSY} = U_{MSY}/\beta$ (Scheuerell 2016)
+  * $S_{gen}$, the spawners that return $S_{MSY}$ in one generation, has to be solved numerically
+- `ADREPORT` gives every one of them a standard error.
+
+::: {#my-long-container style="height: 420px; border: 1px solid #ccc;"}
+```{r}
+#| echo: true
+
+negll_rp <- function(pars){
+  getAll(pars, soxch)
+  beta <- exp(logbeta)
+  mu <- alpha - beta*spawners
+  nll <- -sum(dnorm(log(RS), mu, exp(logsigma), log = TRUE))
+
+  Smax <- 1/beta
+  Seq <- alpha/beta
+  Umsy <- 1 - LamW(exp(1 - alpha))
+  Smsy <- Umsy/beta
+  ## Sgen/Smsy is between 0 and 1. uniroot() works on the tape (RTMB 1.9 or later),
+  ## but its lower and upper limits must be plain numbers, not parameters.
+  ratio <- uniroot(\(x){log(x) + alpha - beta*Smsy*x}, lower = 1e-10, upper = 1, tol = 1e-12)$root
+  Sgen <- ratio*Smsy
+  ADREPORT(Smax); ADREPORT(Seq); ADREPORT(Smsy); ADREPORT(Umsy); ADREPORT(Sgen)
+  return(nll)
+}
+
+obj <- MakeADFun(negll_rp, list(logsigma = 0, alpha = 1.5, logbeta = 0), silent = TRUE)
+fit <- nlminb(obj$par, obj$fn, obj$gr)
+round(summary(sdreport(obj), "report"), 3)   ## Chilko, millions of spawners (Umsy is a rate)
+```
+:::
+
 ## Multivariate Logit Normal
 
 - Consider a vector $\mathbf{p}$, such that if we transform it with a multivariate logit,
@@ -404,31 +450,26 @@ imlogit <- \(x){
   ex/sum(ex)
 }
 
-## ADjoint for determinant
-logdet <- ADjoint(
-  function(J) {
-    determinant(J, logarithm = TRUE)$modulus
-  },
-  function(J, y, dy) {
-    t(solve(J)) * dy
-  },
-  name = "logdet"
-)
-
-# Log absolute determinant of Jacobian using MakeTape
-mlogit_logdet <- function(x) {
-
-  n <- length(x)
-  tape <- MakeTape(\(x) mlogit(x), x)
-  J <- tape$jacobian(x)
-  logdet(J[1:(n-1), 1:(n-1)])
+## Density of p: multivariate normal on the mlogit scale, times the Jacobian.
+## For this transformation the Jacobian has a simple form: 1/prod(p).
+dmvlogitnorm <- function(p, mu, Sigma, log = FALSE){
+  logpdens <- dmvnorm(mlogit(p), mu, Sigma, log = TRUE) - sum(log(p))
+  if(log) return(logpdens)
+  return(exp(logpdens))
 }
 
-
+set.seed(3)
 mu <- c(-1, 1)
 Sigma <- matrix(c(0.25, -0.1, -0.1, 0.5), nrow=2, ncol=2)
 x <- MASS::mvrnorm(1, mu, Sigma)
 p <- imlogit(x)
+dmvlogitnorm(p, mu, Sigma, log = TRUE)
+
+## Check the Jacobian numerically. The free values are p[1] and p[2]; p[3] = 1 - p[1] - p[2].
+J <- MakeTape(\(pf) mlogit(c(pf, 1 - sum(pf))), p[-3])$jacobian(p[-3])
+c(numerical = as.numeric(determinant(J)$modulus), closed_form = -sum(log(p)))
 ```
+
+- `determinant()`, `solve()` and `%*%` work directly on the tape, so no `ADjoint` is needed here.
 
 

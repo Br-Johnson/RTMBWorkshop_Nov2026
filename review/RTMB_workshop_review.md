@@ -2,6 +2,8 @@
 
 Prepared 17 November 2026 with Claude Code (an AI coding assistant) at the repository owner's request, for the fork `Br-Johnson/RTMBWorkshop_Nov2026`. It covers every `.qmd` and `.R` file in `modules/` and `examples/` at commit `2321223`. `homework.qmd` is your own work and is not reviewed here. "I" below is the assistant.
 
+**Update.** After this review was written, most of what it reports was corrected in the workshop files, in the same pull request. [`CHANGES.md`](CHANGES.md) lists each change against the finding it answers. The review below is unchanged: it describes the files as they were at `2321223`, and its line numbers refer to that commit.
+
 The review asks three questions of the material:
 
 1. Is anything missing?
@@ -681,7 +683,7 @@ For completeness, from the literature **[lit]**. Empirical dynamic modelling was
 9. `GAM.qmd`: the `smooth2random` version (G-1).
 10. `mixture_model.qmd:27`: the claim about direct maximisation (X-1).
 
-I have not changed any workshop file. Everything I added is under `review/`.
+When this review was written I had not changed any workshop file. All ten of these fixes, and the rest listed in [`CHANGES.md`](CHANGES.md), have since been made on the same branch.
 
 ---
 

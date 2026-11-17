@@ -12,6 +12,7 @@ Simulate some multinomial data with 5 categories.
 
 library(RTMB)
 
+set.seed(1)   ## the data and the randomized residuals are then the same every time
 dat <- list()
 p_true <- c(0.1,0.5,0.2,0.05,0.15)
 np <- 5
@@ -22,7 +23,7 @@ dat$X <- rmultinom(100, size = size, prob = p_true)
 We make inference on the multivariate logit transformed $\boldsymbol{\alpha}$, not $\textbf{p}$. This is unique as we remove a parameter, as given 4 of the 5 proportions, we know the 5 $p_5 = 1-\sum_{i=1}^4 p_i$. One option for transformation is the multivariate logit,
 
 $$
-  \boldsymbol{\alpha} = g(\textbf{p}) = \{ \log(p_1/(1-p_5), \dots,  \log(p_4/(1-p_5)\}.
+  \boldsymbol{\alpha} = g(\textbf{p}) = \{ \log(p_1/p_5), \dots,  \log(p_4/p_5)\}.
 $$
 The inverse of this function is then,
 
@@ -79,7 +80,7 @@ obj <- MakeADFun(nll, par, silent = TRUE)
 fit <- nlminb (obj$par, obj$fn, obj$gr)
 
 ## Report Pearson Residuals
-pearson <- obj$report()$res
+pearson <- obj$report(fit$par)$res
 ```
 
 Now let's use RTMB to get the OSA residuals
@@ -90,8 +91,12 @@ Now let's use RTMB to get the OSA residuals
 ## One step ahead simulation:
 r <- oneStepPredict(obj, method = "oneStepGeneric", observation.name = "X",
   discrete = TRUE, discreteSupport = 0:size, trace = FALSE)
-osa <- as.matrix(r$residual, nrow = np, ncol = 100)
+## Back to the shape of the data: one row per category, one column per sample
+osa <- matrix(r$residual, nrow = np)
+sum(is.na(osa[np,]))   ## residuals for the last category that are missing, out of 100
 ```
+
+Each count is predicted from the counts before it in the same sample. Once the first four are known, the fifth is known too, so the last category has nothing left to check: most of its residuals are missing, and we leave that row out below.
 
 Now we will compute the randomized quantile residuals assuming independence between each observation. Then do the same thing conditioning on the previous observations, which is equivalent to the OSA residuals.
 
@@ -100,7 +105,7 @@ For the multinomial distribution, a single observation is binomially distributed
 ```{r}
 #| echo: true
 
-## Randomized Quantile Residuals: Marignal CDF is binomial.
+## Randomized Quantile Residuals: Marginal CDF is binomial.
 pest <- imlogit(fit$par)
 rqr <- NULL
 for(j in 1:np){
@@ -114,7 +119,7 @@ for(j in 1:np){
 ## Randomized Quantile Residuals: Conditional CDF is binomial.
 osa_manual <- NULL
 psum <- 1
-Xsum <- numeric(nrow(dat$X))
+Xsum <- numeric(ncol(dat$X))   ## one running total per sample
 for(j in 1:(np-1)){
   pless <- pbinom(dat$X[j,]-1, size = size - Xsum, prob = pest[j]/psum)
   peq <- pbinom(dat$X[j,], size = size - Xsum, prob = pest[j]/psum)

@@ -23,7 +23,8 @@ execute:
 - Include age as part of the model
 - One option is to have a different Ricker curve for each age class
 - Add covariates
-- Run a retrospective analysis over the last 12 years of data
+- Run a retrospective analysis: forecast each of the last 22 returns from the data available at the time
+- Compare your forecasts with a simple benchmark
 
 ## Load in Data
 
@@ -34,13 +35,17 @@ execute:
 
 library(ggplot2)
 library(dplyr)
+library(tidyr)
 library(RTMB)
 
 # Paths start at the project root via here::here(), so this code runs in the
 # Positron or RStudio console and when Quarto renders from this folder.
 sox <- read.csv(here::here("data", "sockeye", "SRDATA2026 1.csv"))
 stock <- read.csv(here::here("data", "sockeye", "FC_StockInfo 2.csv"))
-covariates <- read.csv(here::here("data", "sockeye", "FC_Environmental_Data_2026_Std_Offset_Real.csv"))
+## This file starts with a byte-order mark. Without fileEncoding, R on some
+## systems reads the first column name as "X...yr" and the join below fails.
+covariates <- read.csv(here::here("data", "sockeye", "FC_Environmental_Data_2026_Std_Offset_Real.csv"),
+                       fileEncoding = "UTF-8-BOM")
 sox <- sox %>% left_join(stock, by = "PopID")
 sox <- sox %>% left_join(covariates, by = "yr")
 sox <- sox %>% filter(!is.na(spawners), !is.na(recruits))
@@ -49,18 +54,20 @@ sox <- sox %>% group_by(PopName) %>% mutate(sd_spawners = sd(spawners),  spawner
 
 ## Age Based Ricker Model
 
-- Carrying capacity is shared between age classes but productivity is not.
+- Density dependence ($\beta$) is shared between ages, productivity is not.
 - The observations are related so will choose,
 
 $$
-  \log(R_{at}/S_t) = N(\boldsymbol{\alpha}_a - \beta S_t, \Sigma)
+  \log(R_{at}/S_t) \sim N(\boldsymbol{\alpha}_a - \beta S_t, \Sigma)
 $$
+
 - Given that we have age 4 returns with `NA` for age 5, we can write this as a conditional normal, for $y_{at} = \log(R_{at}/S_t)$,
 
 \begin{align}
-  y_{4t} & \sim N(\mu_{4t}, \sigma_1)\\
-  y_{5t} | y_{4t} & \sim  N(\mu_{5t} + \Sigma_{12}/\Sigma_{11}(y_{4t} - m_{4t}), \Sigma_{22} - \Sigma_{12}^2\Sigma_{11})
+  y_{4t} & \sim N(\mu_{4t}, \Sigma_{11})\\
+  y_{5t} | y_{4t} & \sim  N(\mu_{5t} + \Sigma_{12}/\Sigma_{11}(y_{4t} - \mu_{4t}), \Sigma_{22} - \Sigma_{12}^2/\Sigma_{11})
 \end{align}
+
 
 ## Fitting it in RTMB
 
@@ -73,26 +80,57 @@ negll <- function(pars, data){
   phi <- -1 + 2*plogis(logitphi)
   sigma <- exp(logsigma)
   beta <- exp(logbeta)
-  mu4 <- alpha[1] - beta*spawners
-  mu5 <- alpha[2] - beta*spawners + phi*sigma[2]/sigma[1]*(logRS4 - mu4)
   mis4 <- is.na(logRS4)
   mis5 <- is.na(logRS5)
-  sigma5 <- sqrt(sigma[2]^2*(1-phi^2))
+
+  ## Sigma11 = sigma[1]^2, Sigma22 = sigma[2]^2, Sigma12 = phi*sigma[1]*sigma[2]
+  mu4 <- alpha[1] - beta*spawners
+  ## Age 5 given age 4 from the same brood year (a "sibling" relationship).
+  ## Where age 4 is missing there is nothing to condition on: age 5 on its own.
+  dev4 <- logRS4 - mu4
+  dev4[mis4] <- 0
+  mu5 <- alpha[2] - beta*spawners + phi*sigma[2]/sigma[1]*dev4
+  sigma5 <- sigma[2]*sqrt(1 - phi^2*(!mis4))
 
   ll <- sum(dnorm(logRS4[!mis4], mu4[!mis4], sigma[1], log = TRUE))
-  ll <- ll + sum(dnorm(logRS5[!mis5], mu5[!mis5], sigma5, log = TRUE))
+  ll <- ll + sum(dnorm(logRS5[!mis5], mu5[!mis5], sigma5[!mis5], log = TRUE))
 
   ## Prediction is last year of 4 plus previous year of 5.
+  ## exp() of a mean on the log scale is a median, not a mean.
   n <- length(mu4)
-  Eage4 <- exp(mu4)*spawners
-  Eage5 <- exp(mu5)*spawners
-  pred <- Eage4[n] + Eage5[n-1]
+  med4 <- exp(mu4)*spawners
+  med5 <- exp(mu5)*spawners
+  pred <- med4[n] + med5[n-1]
   REPORT(pred)
-  REPORT(Eage4)
-  REPORT(Eage5)
+  REPORT(med4)
+  REPORT(med5)
+
+  ## The same two pieces on the log scale, with their standard deviations.
+  ## Used for the mean, and later for a forecast interval.
+  fc <- c(log(med4[n]), log(med5[n-1]))
+  sd_fc <- c(sigma[1], sigma5[n-1])
+  pred_mean <- sum(exp(fc + sd_fc^2/2))
+  ADREPORT(fc)
+  REPORT(sd_fc)
+  REPORT(pred_mean)
   return(-ll)
 }
 
+```
+
+## Zero Returns
+
+- A zero return has no logarithm.
+- Adding a small constant before taking the log is arbitrary, and the estimates depend on which constant you pick.
+- Here a zero is treated as missing. That is reasonable when zeros are rare (Stellako has one).
+- With many zeros, model total recruits and the split between ages separately.
+
+```{r}
+#| echo: true
+
+sox_ch <- sox %>% filter(PopName == "Stellako") %>%
+  mutate(logRS4 = ifelse(age4 > 0, log(age4/spawners), NA),
+    logRS5 = ifelse(age5 > 0, log(age5/spawners), NA))
 ```
 
 ## Prediction
@@ -102,11 +140,7 @@ negll <- function(pars, data){
 ```{r}
 #| echo: true
 
-sox_ch <- sox %>% filter(PopName == "Stellako") %>%
-  mutate(logRS4 = log((age4+1e-4)/spawners),
-    logRS5 = log((age5+1e-4)/spawners))
-
-cmb <- function(f, d) function(p) f(p, d)
+cmb <- function(f, d, ...) function(p) f(p, d, ...)
 
 params <- list(
   logsigma = c(0,0),
@@ -116,8 +150,44 @@ params <- list(
   )
 
 obj <- MakeADFun(cmb(negll, sox_ch), params, silent = TRUE)
-fit <- nlminb(obj$par, obj$fn, obj$gr)
-pars <- obj$env$parList(fit$par)
+fit <- nlminb(obj$par, obj$fn, obj$gr, control = list(eval.max = 1e4, iter.max = 1e4))
+fit$message
+```
+
+## Median or Mean?
+
+- `exp()` of a mean on the log scale is the **median** of a lognormal. Its mean is larger by $e^{\sigma^2/2}$.
+
+```{r}
+#| echo: true
+
+## Report at the best parameters found (not the last ones the optimizer tried)
+rep <- obj$report(obj$env$last.par.best)
+round(c(sum_of_medians = rep$pred, sum_of_means = rep$pred_mean), 3)
+```
+
+- The two are far apart when $\sigma$ is near 1, as it is here. Say which one you forecast.
+
+## How Uncertain is the Forecast?
+
+- An interval needs the uncertainty in the estimates and the year to year variation in recruitment. Simulate both.
+
+```{r}
+#| echo: true
+
+forecast_dist <- function(obj, nsim = 4000){
+  rep <- obj$report(obj$env$last.par.best)
+  sdr <- sdreport(obj)
+  ## 1. Uncertainty in the estimates: draw the two log-scale means we passed to ADREPORT
+  m <- MASS::mvrnorm(nsim, sdr$value, sdr$cov)
+  ## 2. Variation in recruitment around those means (sigma)
+  total <- exp(rnorm(nsim, m[,1], rep$sd_fc[1])) + exp(rnorm(nsim, m[,2], rep$sd_fc[2]))
+  q <- quantile(total, c(0.1, 0.5, 0.9))
+  c(pred = rep$pred, lower = q[[1]], median = q[[2]], upper = q[[3]])
+}
+
+set.seed(2026)
+round(forecast_dist(obj), 3)   ## 80% interval for the last return in the data
 ```
 
 ## Do Prediction
@@ -125,110 +195,267 @@ pars <- obj$env$parList(fit$par)
 ```{r}
 #| echo: true
 
-years <- 2000:2021
-pred <- NULL
-for( i in seq_along(years) ){
-  dat <- sox_ch %>% filter(yr <= years[i])
-  dat$logRS4[dat$yr == years[i]] <- NA
-  dat$logRS5[dat$yr == years[i]] <- NA
-  dat$logRS5[dat$yr == years[i]-1] <- NA
-
-  obj <- MakeADFun(cmb(negll, dat), params, silent = TRUE)
-  fit <- nlminb(obj$par, obj$fn, obj$gr)
-  pars <- obj$env$parList(fit$par)
-  pred <- c(pred, obj$report()$pred)
+## Refit each year with only the data available at the time, and forecast the next return
+hindcast <- function(make_obj, years = 2000:2021){
+  out <- NULL
+  for( i in seq_along(years) ){
+    dat <- sox_ch %>% filter(yr <= years[i])
+    ## Hide the returns that would not be known yet
+    dat$logRS4[dat$yr == years[i]] <- NA
+    dat$logRS5[dat$yr == years[i]] <- NA
+    dat$logRS5[dat$yr == years[i]-1] <- NA
+    obj <- make_obj(dat)
+    fit <- nlminb(obj$par, obj$fn, obj$gr, control = list(eval.max = 1e4, iter.max = 1e4))
+    out <- rbind(out, c(forecast_dist(obj), convergence = fit$convergence))
+  }
+  data.frame(year = years + 4, out, row.names = NULL)
 }
 
-pred <- data.frame(year = years+4, pred = pred)
+set.seed(2026)
+pred <- hindcast(function(dat) MakeADFun(cmb(negll, dat), params, silent = TRUE))
+sum(pred$convergence != 0)   ## refits that did not converge
+```
 
-library(tidyr)
+## Do Prediction (plot)
+
+```{r}
+#| echo: true
+#| out-width: "70%"
+#| fig-align: "center"
+#| fig-width: 8
+#| fig-height: 3.6
+
 recruits_ch <- sox_ch %>% 
   pivot_longer(c(age4, age5)) %>% 
   mutate(year = ifelse(name == "age4", yr + 4, yr + 5)) %>%
   group_by(year) %>% summarize(recruits = sum(value))
 
 recruits_ch %>% ggplot(aes(x = year, y = recruits)) + geom_line() + theme_minimal() +
+  geom_ribbon(data = pred, aes(x = year, ymin = lower, ymax = upper), inherit.aes = FALSE, fill = 'red', alpha = 0.2) +
   geom_line(data = pred, aes(x = year, y = pred), col = 'red')
 
 ```
 
-## Adding Covariates
+## How Good is the Forecast?
+
+- Benchmark: the return four years earlier (a "naive" forecast).
 
 ```{r}
 #| echo: true
 
-negll <- function(pars, data, X){
+skill <- pred %>% left_join(recruits_ch, by = "year") %>%
+  left_join(recruits_ch %>% transmute(year = year + 4, naive = recruits), by = "year")
+## bias: mean of forecast minus observed. MAE: mean absolute error. In millions of fish.
+score <- function(forecast, observed){
+  c(bias = mean(forecast - observed), MAE = mean(abs(forecast - observed)),
+    too_high = sum(forecast > observed))
+}
+tab <- rbind(Ricker = score(skill$pred, skill$recruits), Naive = score(skill$naive, skill$recruits))
+## MASE: the error relative to the naive forecast. Below 1 beats it.
+round(cbind(tab, MASE = tab[, "MAE"]/tab["Naive", "MAE"]), 3)
+```
+
+- Too high in nearly every year, and no better than naive.
+
+## Do the Intervals Cover?
+
+```{r}
+#| echo: true
+
+## Returns inside the 80% interval, out of 22 (expect about 18)
+sum(skill$recruits >= skill$lower & skill$recruits <= skill$upper)
+## Returns below the interval (expect about 2)
+sum(skill$recruits < skill$lower)
+```
+
+- Too few returns fall inside the 80% interval, and the misses are on the low side.
+- An interval that is too narrow, or in the wrong place, is a finding about the model.
+
+## Adding Covariates
+
+- Covariates shift productivity up or down in each brood year.
+- Choose few, for reasons you can state in advance, and test them out of sample.
+
+```{r}
+#| echo: true
+
+## The same function with two optional additions, marked NEW
+negll2 <- function(pars, data, Z = NULL, rw = FALSE){
   getAll(pars, data, warn = FALSE)
 
   phi <- -1 + 2*plogis(logitphi)
   sigma <- exp(logsigma)
   beta <- exp(logbeta)
-  delta_alpha <- drop(X %*% a)
-  
-  mu4 <- delta_alpha + alpha[1] - beta*spawners
-  mu5 <- delta_alpha + alpha[2] - beta*spawners + phi*sigma[2]/sigma[1]*(logRS4 - mu4)
   mis4 <- is.na(logRS4)
   mis5 <- is.na(logRS5)
-  sigma5 <- sqrt(sigma[2]^2*(1-phi^2))
+
+  ## NEW: changes in productivity from year to year
+  delta_alpha <- rep(0, length(spawners))
+  if(!is.null(Z)) delta_alpha <- delta_alpha + drop(Z %*% a)   ## covariates
+  if(rw) delta_alpha <- delta_alpha + a_t[yr - min(yr) + 1]    ## random walk (next model)
+
+  mu4 <- delta_alpha + alpha[1] - beta*spawners
+  dev4 <- logRS4 - mu4
+  dev4[mis4] <- 0
+  mu5 <- delta_alpha + alpha[2] - beta*spawners + phi*sigma[2]/sigma[1]*dev4
+  sigma5 <- sigma[2]*sqrt(1 - phi^2*(!mis4))
 
   ll <- sum(dnorm(logRS4[!mis4], mu4[!mis4], sigma[1], log = TRUE))
-  ll <- ll + sum(dnorm(logRS5[!mis5], mu5[!mis5], sigma5, log = TRUE))
+  ll <- ll + sum(dnorm(logRS5[!mis5], mu5[!mis5], sigma5[!mis5], log = TRUE))
+
+  ## NEW: random walk (next model)
+  if(rw){
+    tau <- exp(logtau)
+    ll <- ll + dnorm(a_t[1], 0, tau, log = TRUE) + sum(dnorm(diff(a_t), 0, tau, log = TRUE))
+  }
 
   ## Prediction is last year of 4 plus previous year of 5.
   n <- length(mu4)
-  Eage4 <- exp(mu4)*spawners
-  Eage5 <- exp(mu5)*spawners
-  pred <- Eage4[n] + Eage5[n-1]
+  med4 <- exp(mu4)*spawners
+  med5 <- exp(mu5)*spawners
+  pred <- med4[n] + med5[n-1]
   REPORT(pred)
-  REPORT(Eage4)
-  REPORT(Eage5)
+  REPORT(med4)
+  REPORT(med5)
+
+  fc <- c(log(med4[n]), log(med5[n-1]))
+  sd_fc <- c(sigma[1], sigma5[n-1])
+  pred_mean <- sum(exp(fc + sd_fc^2/2))
+  ADREPORT(fc)
+  REPORT(sd_fc)
+  REPORT(pred_mean)
   return(-ll)
 }
-cmb <- function(f, d, X) function(p) f(p, d, X)
-
-X <- model.matrix(~peak + aflow + mapsst + pdo + stn2js, data = sox_ch)
-
-params <- list(
-  logsigma = c(0,0),
-  alpha = c(0,0),
-  a = rnorm(ncol(X)),
-  logbeta = 0,
-  logitphi = 0
-  )
-
-obj <- MakeADFun(cmb(negll, sox_ch, X), params, silent = TRUE)
-fit <- nlminb(obj$par, obj$fn, obj$gr)
 ```
 
-## Forecast w/ Covariates
+## Fitting with Covariates
+
+- No intercept column in `Z`: `alpha` already is one, and two intercepts cannot be told apart.
+- Center and scale: effects are then per standard deviation, and the optimizer has an easier job.
 
 ```{r}
-sox_ch <- sox %>% filter(PopName == "Stellako") %>%
-  mutate(logRS4 = log((age4+1e-4)/spawners),
-    logRS5 = log((age5+1e-4)/spawners))
+#| echo: true
 
-years <- 2000:2021
-pred <- NULL
-for( i in seq_along(years) ){
-  dat <- sox_ch %>% filter(yr <= years[i])
-  dat$logRS4[dat$yr == years[i]] <- NA
-  dat$logRS5[dat$yr == years[i]] <- NA
-  dat$logRS5[dat$yr == years[i]-1] <- NA
-  X <- model.matrix(~ peak + aflow + jnesst + pdo + stn2js, data = dat)
+covs <- c("peak", "aflow", "jnesst", "pdo", "stn2js")
+Z <- scale(as.matrix(sox_ch[, covs]))
 
-  obj <- MakeADFun(cmb(negll, dat, X), params, silent = TRUE)
-  fit <- nlminb(obj$par, obj$fn, obj$gr)
-  pars <- obj$env$parList(fit$par)
-  pred <- c(pred, obj$report()$pred)
-}
+params_cov <- c(params, list(a = rep(0, ncol(Z))))
 
-pred <- data.frame(year = years+4, pred = pred)
-
-recruits_ch <- sox_ch %>% 
-  pivot_longer(c(age4, age5)) %>% 
-  mutate(year = ifelse(name == "age4", yr + 4, yr + 5)) %>%
-  group_by(year) %>% summarize(recruits = sum(value))
-
-recruits_ch %>% ggplot(aes(x = year, y = recruits)) + geom_line() + theme_minimal() +
-  geom_line(data = pred, aes(x = year, y = pred), col = 'red')
+obj_cov <- MakeADFun(cmb(negll2, sox_ch, Z), params_cov, silent = TRUE)
+fit_cov <- nlminb(obj_cov$par, obj_cov$fn, obj_cov$gr, control = list(eval.max = 1e4, iter.max = 1e4))
+fit_cov$message
 ```
+
+## Do the Covariates Help?
+
+```{r}
+#| echo: true
+
+est <- summary(sdreport(obj_cov), "fixed")
+est <- est[rownames(est) == "a", ]
+rownames(est) <- covs
+round(cbind(est, z = est[, "Estimate"]/est[, "Std. Error"]), 2)
+
+aic <- function(fit) 2*fit$objective + 2*length(fit$par)
+round(c(Ricker = aic(fit), Covariates = aic(fit_cov)), 1)
+```
+
+- One effect of five is more than two standard errors from zero, and AIC is lower without them.
+
+## Productivity that Changes over Time
+
+- The forecasts are too high because productivity has declined. One $\alpha$ for 74 years averages over that.
+- Let productivity drift as a random walk. For brood year $t$,
+
+$$
+  \alpha_{at} = \alpha_a + u_t, \qquad u_t \sim N(u_{t-1}, \tau^2)
+$$
+
+- $u_t$ is a random effect (`a_t` in the code), so this is one more job for the Laplace approximation.
+- A random walk predicts "the same as the latest value", so the forecast uses recent productivity.
+
+## Fitting the Random Walk
+
+```{r}
+#| echo: true
+
+make_rw <- function(dat){
+  params_rw <- c(params, list(a_t = rep(0, max(dat$yr) - min(dat$yr) + 1), logtau = log(0.2)))
+  MakeADFun(cmb(negll2, dat, rw = TRUE), params_rw, random = "a_t", silent = TRUE)
+}
+obj_rw <- make_rw(sox_ch)
+fit_rw <- nlminb(obj_rw$par, obj_rw$fn, obj_rw$gr, control = list(eval.max = 1e4, iter.max = 1e4))
+fit_rw$message
+round(c(Ricker = aic(fit), RandomWalk = aic(fit_rw)), 1)
+```
+
+- AIC prefers the random walk. Does it forecast better?
+
+## Productivity over Time (plot)
+
+```{r}
+#| echo: true
+#| out-width: "70%"
+#| fig-align: "center"
+#| fig-width: 8
+#| fig-height: 3.6
+
+u_hat <- as.data.frame(summary(sdreport(obj_rw), "random"))
+names(u_hat) <- c("est", "se")
+u_hat$year <- min(sox_ch$yr) + 1:nrow(u_hat) - 1
+ggplot(u_hat, aes(x = year, y = est)) + geom_line() + theme_minimal() +
+  geom_ribbon(aes(ymin = est - 1.96*se, ymax = est + 1.96*se), alpha = 0.3) +
+  xlab("Brood year") + ylab("Change in productivity (log)")
+```
+
+## Comparing the Forecasts
+
+```{r}
+#| echo: true
+
+set.seed(2026)
+pred_cov <- hindcast(function(dat){
+  Z <- scale(as.matrix(dat[, covs]))   ## scaled with the data available at the time
+  MakeADFun(cmb(negll2, dat, Z), params_cov, silent = TRUE)
+})
+pred_rw <- hindcast(make_rw)
+observed <- skill$recruits
+tab <- rbind(Ricker = score(pred$pred, observed), Covariates = score(pred_cov$pred, observed),
+             "Random walk" = score(pred_rw$pred, observed), Naive = score(skill$naive, observed))
+round(cbind(tab, MASE = tab[, "MAE"]/tab["Naive", "MAE"]), 3)
+
+## Returns inside the 80% interval, out of 22 (expect about 18)
+sapply(list(Ricker = pred, Covariates = pred_cov, "Random walk" = pred_rw),
+       function(p) sum(observed >= p$lower & observed <= p$upper))
+```
+
+## Comparing the Forecasts (plot)
+
+```{r}
+#| echo: true
+#| out-width: "60%"
+#| fig-align: "center"
+#| fig-width: 8
+#| fig-height: 3.2
+
+recruits_ch %>% filter(year >= 2000) %>% ggplot(aes(x = year, y = recruits)) + geom_line() + theme_minimal() +
+  geom_line(data = pred, aes(x = year, y = pred), col = 'red') +
+  geom_line(data = pred_rw, aes(x = year, y = pred), col = 'blue') +
+  ggtitle("Observed (black), Ricker (red), random walk (blue)")
+```
+
+## What the Hindcast Says
+
+- Stationary Ricker: too high in almost every year.
+- Covariates: a small gain, and still no better than the naive forecast.
+- Random walk: the bias is gone, and the error is below the naive forecast.
+- This is one stock and 22 forecasts. Repeat it for other stocks before you believe it.
+
+## More to Try
+
+- Other stocks. What will you do where many returns are zero (Quesnel)?
+- Other benchmarks, such as the mean of all earlier returns.
+- Delayed density dependence: the Larkin model.
+- Heavier tails for the residuals: do the intervals cover better?
+- All stocks at once, sharing information (Module 5).
+- Regressing $\log(R/S)$ on $S$ has known biases. State-space models address them: see the `samEst` package.

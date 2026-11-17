@@ -81,8 +81,6 @@ objective_function <- \(pars){
 }
 
 make_adfun <- function(pars, data){
-  data_env <- new.env()
-  
   ## The entire function's environment
   # environment(objective_function) <- environment()  
   
@@ -90,7 +88,7 @@ make_adfun <- function(pars, data){
   data_env <- local({data <- data; environment()})
   environment(objective_function) <- data_env
   
-  obj <- MakeADFun(objective_function, param, silent = TRUE)
+  obj <- MakeADFun(objective_function, pars, silent = TRUE)   ## the starting values passed in
   obj
 }
 
@@ -105,10 +103,10 @@ fit_nadina <- nlminb(obj_nadina$par, obj_nadina$fn, obj_nadina$gr)
 - Use `ad_context()` to check if the function is being taped `TRUE`or not.
 - Can use it to simulate within your model code, which when calling `$report()` will execute in R
 - Super useful for transformations when there could create bias in the mean
+- `ad_context()` is internal to RTMB (hence the `:::`), so it can change between versions
 
 ```{r}
 #| echo: true
-#| eval: false
 
 data(cars)
 
@@ -119,7 +117,7 @@ pred_func <- function(pars) {
   
   dist %~% dnorm(mu, sd = sigma)
 
-  ## Prediction Interval via simulation
+  ## Prediction interval via simulation, at the parameter values report() is given
   if (!RTMB:::ad_context()) {
     sim_matrix <- replicate(10000, rnorm(length(mu), mean = mu, sd = sigma))
     pred_intervals <- apply(sim_matrix, 1, quantile, probs = c(0.025, 0.975)) 
@@ -128,10 +126,18 @@ pred_func <- function(pars) {
   }
 }
 
-obj <- MakeADFun(pred_func, list(beta = c(0,0), logsigma = log(sigma)), silent = TRUE)
+obj <- MakeADFun(pred_func, list(beta = c(0,0), logsigma = log(sd(cars$dist))), silent = TRUE)
 fit <- nlminb(obj$par, obj$fn, obj$gr)
-intervals <- t(obj$report()$pred_intervals)
+set.seed(1)
+intervals <- t(obj$report(fit$par)$pred_intervals)
+
+## Mean width of the interval, against lm()
+pred_lm <- predict(lm(dist ~ speed, data = cars), newdata = cars, interval = "prediction")
+round(c(simulated = mean(intervals[,2] - intervals[,1]), lm = mean(pred_lm[,"upr"] - pred_lm[,"lwr"])), 1)
 ```
+
+- This is a "plug-in" interval: it treats the estimates as known, so it is a little too narrow.
+- The **Predictions** slide later adds the uncertainty in the estimates.
 
 ## Fixing Overload Errors
 
@@ -151,7 +157,8 @@ myfunc <- \(par){
 
 ## Things with no gradient
 
-- You can't use uniform distributions in RTMB as they have discontinuities at their end points.
+- A uniform *prior* needs no density at all: it is a constant. Keep the parameter in range with a transformation (e.g. `plogis`) or with bounds in `nlminb`.
+- A uniform model for *data* with estimated end points will not work: the likelihood jumps at the end points.
 - No while loops if the number of iterations depends on parameters
 - No if statements that depend on parameter values
 - Dimension and number of operations must be set
@@ -172,6 +179,9 @@ fn <- function(theta){
 
 ## Forcing AD Overload
 
+- `ADoverload("if")` lets a tape branch on the value of a parameter.
+- RTMB lists it as experimental, and the condition must be a single value (not a vector).
+
 ```{r}
 #| echo: true
 
@@ -190,7 +200,7 @@ F(-2)
 F$jacobian(2)
 F$jacobian(-100)
 
-## This isn't going to work
+## This isn't going to work: the number of terms in each sum depends on x
 f <- function(x) {
   "if" <- ADoverload("if")
   if(x > 5){ 
@@ -208,6 +218,7 @@ f <- function(x) {
 - Don't have to explicitly write `log = TRUE`
 - Don't need to declare we are returning anything
 - More intuitive for many people
+- Use one style per function. With `%~%` the function returns its own running total, so a `return(nll)` built by hand is ignored and the terms in it are silently lost.
 
 ```{r}
 #| echo: true
@@ -253,6 +264,7 @@ exp(optmu(0.1))
 - Let's use RTMB to get a prediction standard error
 - Compare with `lm` in R using cars data
 - Augment data and predict with `ADREPORT`
+- Confidence interval: uncertainty in the mean (`se`). Prediction interval: add the spread of a new observation, `sqrt(se^2 + sigma^2)`.
 
 ```{r}
 #| echo: true
@@ -307,6 +319,8 @@ ggplot(data = pred, aes(x = speed, y = est)) +
 - We can pass the object from `RTMB` to `STAN` using `tmbstan`
 - Just need to make sure your distributions are correct for the prior that you want
 - Either explicitly tell `tmbstan` the bounds of your variables, or use Jacobians to transform the prior distributions and pass things on the transformed scale.
+- Give every parameter a prior, and check the sampler's diagnostics (R-hat, effective sample size, divergences) before using the draws.
+- Newer samplers that take an RTMB object: `SparseNUTS` and `StanEstimators` (neither is on CRAN yet).
 
 ```{r}
 #| echo: true
@@ -332,7 +346,7 @@ obj <- MakeADFun(negll, list(beta = c(0,0), logsigma = 0))
 fit <- tmbstan(obj)
 post_sigma <- exp(as.matrix(fit)[,"logsigma"])
 
-## Option 1: transformed parameters + Jacobians
+## Option 2: parameters on their natural scale + bounds
 negll2 <- \(pars){
   getAll(pars, cars, warn = FALSE)
   mu  <- beta[1] + beta[2]*speed  
