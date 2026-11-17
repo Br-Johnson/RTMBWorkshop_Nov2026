@@ -71,7 +71,9 @@ range(beta_fit - coef(fit_lm))
 Difference can't be explained simply by numerical precision. If we start at the values from `lm` the function stays approximately there.
 
 ```{r}
-fit_again <- nlminb(c(coef(fit_lm), sigma(fit_lm)/n*(n-npars)), negloglik)
+## The last parameter is log(sigma). lm() reports sigma with n - npars in the
+## denominator, the maximum likelihood estimate has n.
+fit_again <- nlminb(c(coef(fit_lm), log(sigma(fit_lm)*sqrt((n-npars)/n))), negloglik)
 range(fit_again$par[1:npars] - coef(fit_lm))
 exp(fit_again$par[npars+1])*sqrt(n/(n-npars)) - sigma(fit_lm)
 ```
@@ -89,7 +91,7 @@ range(numDeriv::jacobian(negloglik, fit$par))
 range(numDeriv::jacobian(negloglik, fit_again$par))
 ```
 
-Another thing that can be happening is that the values of carrying capacity must be positive. We can inflict that constraint on the model and see if we fit better.
+Another thing that can be happening is that the density dependence must be positive (the slopes on spawners must be negative). We can inflict that constraint on the model and see if we fit better.
 
 ```{r}
 which_car <- grep("spawner", colnames(X))

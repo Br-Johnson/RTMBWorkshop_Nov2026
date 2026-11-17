@@ -36,11 +36,11 @@ ggplot(data = sox, aes(x = log(spawners), y = log(recruits), colour = PopName)) 
 
 ## Model
 
-A Ricker stock recruit model relates the number of successfully returning fish (recruits) to the number of spawners, accounting for productivity and mortality in the term $\alpha$ and carrying capacity in $\gamma$. Effective female spawners, $S_{kt}$, in brood year $t$ and from stock $k$, produce $R_{kt}$ recruits. Recruits are estimated based on escapement, fishery removals, and en-route losses, combined over multiple return years, or age classes. For simplicity we will assume that each stock has their own productivity and carrying capacity.
+A Ricker stock recruit model relates the number of successfully returning fish (recruits) to the number of spawners, accounting for productivity and mortality in the term $\alpha$ and density dependence in $\gamma$. Effective female spawners, $S_{kt}$, in brood year $t$ and from stock $k$, produce $R_{kt}$ recruits. Recruits are estimated based on escapement, fishery removals, and en-route losses, combined over multiple return years, or age classes. For simplicity we will assume that each stock has their own productivity and density dependence.
 
 $$
   R_{kt} = S_{kt} \exp(\alpha_{k} -\gamma_k S_{k,t}),
-$$ where $\alpha_{k}$ is log productivity and $\gamma_k$ is carrying capacity. This is usually written as the log recruits per spawners, with uncertainty added as white noise with standard deviation $\sigma$, $\epsilon_{k,t} \sim N(0,\sigma^2)$,
+$$ where $\alpha_{k}$ is log productivity and $\gamma_k$ is the strength of density dependence: recruitment is highest at $S = 1/\gamma_k$, and the unfished equilibrium (the carrying capacity) is $\alpha_k/\gamma_k$. This is usually written as the log recruits per spawners, with uncertainty added as white noise with standard deviation $\sigma$, $\epsilon_{k,t} \sim N(0,\sigma^2)$,
 
 $$
   \log(R_{kt}/S_{kt}) =\alpha_{k} - \gamma_k S_{k,t} + \epsilon_{k,t}.
@@ -64,7 +64,7 @@ X = \begin{bmatrix}
 1 & 1 & 0 \\ 
 1 & 0 & 1 
 \end{bmatrix}
-$$ This defines a contrast where the coefficient $\beta_0$ is the intercept terms and $\beta_1$ and $beta_2$ are how much the stocks 2 and 3 differ from the intercept, or stock 1. We might want to remove the intercept so that we fit a separate log productivity for each, which is written as `~0+PopName`.
+$$ This defines a contrast where the coefficient $\beta_0$ is the intercept terms and $\beta_1$ and $\beta_2$ are how much the stocks 2 and 3 differ from the intercept, or stock 1. We might want to remove the intercept so that we fit a separate log productivity for each, which is written as `~0+PopName`.
 
 $$
 X = \begin{bmatrix} 
@@ -144,7 +144,7 @@ pars_init <- c(0,0)
 fit0 <- nlminb(pars_init, negll, data = x)
 ```
 
-The function `nlmbin` searches the function to find the minimum, but other optimizers are also fine (e.g. `optim`). If we compare our estimates with `lm` we find that $\mu$ is the same but $\sigma$ is different. This is because the MLE of the variance term is actually biased and is generally corrected for bias in the `lm` function. To match them we must do bias correction for $a$ parameters (1 in the example below) $n/(n-a)$.
+The function `nlminb` searches the function to find the minimum, but other optimizers are also fine (e.g. `optim`). If we compare our estimates with `lm` we find that $\mu$ is the same but $\sigma$ is different. This is because the MLE of the variance term is actually biased and is generally corrected for bias in the `lm` function. To match them we must do bias correction for $a$ parameters (1 in the example below) $n/(n-a)$. This correction is a special case of restricted maximum likelihood (REML), which we come back to with random effects in Module 5.
 
 ```{r, eval = FALSE}
 fit0$par[1] - mean(x) ## Should be the same...

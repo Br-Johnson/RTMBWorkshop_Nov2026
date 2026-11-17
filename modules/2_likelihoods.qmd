@@ -87,7 +87,7 @@ polygon(c(x[x <= 1], 1, 0), c(fx[x <= 1], 0, 0), col="blue", border=NA)
 - Then the joint density is
 $$
 \begin{aligned}
-  f(\textbf{x})  & = f(x_1, \ldots, f_n)\\
+  f(\textbf{x})  & = f(x_1, \ldots, x_n)\\
   & = f(x_1)f(x_2) \cdots f(x_n)\\ 
   & =  \prod_{i=1}^n f(x_i)
 \end{aligned}
@@ -108,6 +108,7 @@ $$
 #| echo: true
 #| fig-align: center
 
+set.seed(1)   ## the simulated data are then the same every time the slides are built
 x <- rbinom(30, size = 20, prob = 0.25)
 p <- seq(0, 1, 0.01)
 lik <- \(p){prod(dbinom(x, prob = p, size = 20))}
@@ -266,23 +267,26 @@ $$
 - In C++ loops are very fast.
 
 ```{r, echo = TRUE}
+  library(RTMB)   ## more on this in a moment
   x <- rnorm(1000, 0, 5)
-  ll_vec <- \(a){
-    lfx <- dnorm(x, 0, 5, log = TRUE)
-    ll <- sum(lfx)
-    ll*a
+  ## Log-likelihood of the mean (sd known), written two ways
+  ll_vec <- \(mu){
+    lfx <- dnorm(x, mu, 5, log = TRUE)
+    sum(lfx)
   }
-  ll_loop <- \(a){  
+  ll_loop <- \(mu){  
     ll <- 0
     for( i in 1:1000){
-      ll <- ll + dnorm(x[i], 0, 5, log = TRUE)
+      ll <- ll + dnorm(x[i], mu, 5, log = TRUE)
     }
-    ll*a
+    ll
   }
 
   ## First taste of RTMB... :)
-  ll_loopc <- RTMB::MakeTape(ll_loop, 1)
-  ll_vecc <- RTMB::MakeTape(ll_vec, 1)
+  ## The calculation has to depend on the input `mu`: anything that does not
+  ## is worked out once, while taping, and stored as a constant.
+  ll_loopc <- MakeTape(ll_loop, 0)
+  ll_vecc <- MakeTape(ll_vec, 0)
   
   microbenchmark::microbenchmark(
     vectorized = ll_vec(rnorm(1)),
@@ -305,7 +309,7 @@ x <- rnorm(50, 2, 5)
 negloglik <- \(theta){
   mu <- theta[1]
   sigma <- theta[2]
-  ll <- -sum(dnorm(x, mu, sigma, log = TRUE))
+  ll <- sum(dnorm(x, mu, sigma, log = TRUE))
   return(-ll)
 }
 ```
@@ -316,7 +320,7 @@ negloglik <- \(theta){
 
 - Optimization typically wants no discontinuities in parameter space.
 - We know standard deviation is strictly positive $\sigma > 0$
-- $\log$ maps a positive number to $\{\infty, \infty\}$
+- $\log$ maps a positive number to $(-\infty, \infty)$
   * Inverse is $\exp$
 - If $p \in [0,1]$, then $p/(1-p) \in [0, \infty)$
 - $\alpha = \text{logit}(p) = \log(p/(1-p)) \in (-\infty, \infty)$
@@ -328,7 +332,7 @@ negloglik <- \(theta){
 negloglik <- \(theta){
   mu <- theta[1]
   sigma <- exp(theta[2])
-  ll <- -sum(dnorm(x, mu, sigma, log = TRUE))
+  ll <- sum(dnorm(x, mu, sigma, log = TRUE))
   return(-ll)
 }
 ```
@@ -343,7 +347,7 @@ library(RTMB)
 negloglik <- \(theta){
   getAll(theta)
   sigma <- exp(logsigma)
-  ll <- -sum(dnorm(x, mu, sigma, log = TRUE))
+  ll <- sum(dnorm(x, mu, sigma, log = TRUE))
   return(-ll)
 }
 
@@ -351,6 +355,7 @@ pars <- list(mu = 0, logsigma = 0)
 negloglik(pars)
 obj <- MakeADFun(negloglik, pars)
 obj$fn(c(0,0))
+-sum(dnorm(x, 0, exp(0), log = TRUE))   ## always check against plain R
 
 microbenchmark::microbenchmark(
   R = negloglik(list(mu = rnorm(1), logsigma = rnorm(1))),
@@ -362,7 +367,7 @@ microbenchmark::microbenchmark(
 
 - Make your sockeye Ricker model run as an `RTMB` function
 - Can log productivity be any values?
-- Can carrying capacity be negative?
+- Can the density dependence parameter be negative?
 - Note
   * `getAll` attaches list to environment.
   * Pass inputs as list of named variables

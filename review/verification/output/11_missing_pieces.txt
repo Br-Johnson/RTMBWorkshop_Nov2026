@@ -1,0 +1,117 @@
+[setup] R 4.3.3 | RTMB 2.0 | TMB 1.9.25 | locale C.UTF-8
+
+==============================================================================
+A. Reference points for one stock (Chilko), with delta-method standard errors
+==============================================================================
+     Estimate Std. Error     CV
+Smax   0.3875     0.0726 0.1874
+Seq    0.9363     0.1386 0.1481
+Smsy   0.3104     0.0516 0.1661
+Umsy   0.8011     0.0243 0.0304
+Sgen   0.0299     0.0088 0.2934
+check: S_gen * exp(alpha - beta * S_gen) = 0.31044 | S_msy = 0.31044 
+Hilborn (1985) approximation S_msy ~ (alpha/beta)(0.5 - 0.07 alpha) = 0.3098 | beta itself = 2.581 per million spawners (a rate, not a capacity)
+
+==============================================================================
+B. Bias correction of exp(random effect): yearly productivity index in the AR(1) model
+==============================================================================
+ratio (bias-corrected / plug-in) of the yearly productivity index: mean 1.02 | range 1.016 to 1.143 
+ brood_year plug_in bias_corrected
+       1948   13.12          13.44
+       1967   21.53          21.95
+       1987   13.35          13.57
+       2007    7.87           8.00
+       2022    7.62           8.71
+
+==============================================================================
+C. Ricker vs Larkin by stock (ordinary least squares on the same rows)
+==============================================================================
+dominance = mean spawners on the largest cycle line / median over the four lines
+            stock  n dominance dAIC_Larkin_minus_Ricker lag_coefs_negative
+     Late Shuswap 71      14.7                    -22.3                  3
+           Chilko 71       1.2                    -19.7                  3
+         Stellako 71       1.4                    -19.0                  3
+          Quesnel 71       3.4                    -16.5                  3
+            Gates 51       1.4                    -15.7                  3
+          Seymour 71       4.7                    -12.1                  3
+          Portage 58       4.0                    -10.8                  3
+ Upper Pitt River 71       1.1                    -10.3                  3
+     Scotch Creek 35      14.1                     -7.8                  3
+     Early Stuart 71       4.8                     -2.2                  3
+             Raft 71       1.7                     -0.9                  2
+      Late Stuart 70       8.3                      2.2                  2
+           Bowron 71       2.2                      3.7                  0
+         Harrison 72       1.5                      3.7                  2
+           Nadina 46       1.3                      3.7                  3
+       Birkenhead 71       1.7                      4.0                  2
+     Fennel Creek 52       1.1                      4.4                  3
+     Weaver Creek 53       1.5                      4.4                  2
+           Cultus 26       6.7                      5.5                  2
+stocks where the Larkin form lowers AIC by more than 2: 10 of 19 
+
+AIC difference from the best of four models, by stock (0 = best):
+            stock Ricker Larkin Ricker+RW Larkin+RW      best tau_Ricker_RW
+           Chilko   19.7    0.0      17.7       2.5    Larkin          0.13
+            Gates   15.7    0.0      15.6       2.0    Larkin          0.12
+     Late Shuswap   22.3    0.0      24.1       2.0    Larkin          0.06
+          Portage   10.8    0.0       7.5       1.5    Larkin          0.15
+     Scotch Creek    7.8    0.0       9.6       2.0    Larkin          0.13
+          Seymour   12.1    0.0       9.3       2.0    Larkin          0.09
+          Quesnel   29.0   12.5       5.0       0.0 Larkin_RW          0.23
+             Raft    5.6    4.7       5.2       0.0 Larkin_RW          0.36
+         Stellako   27.3    8.4       7.5       0.0 Larkin_RW          0.13
+ Upper Pitt River   20.0    9.6       7.7       0.0 Larkin_RW          0.37
+           Cultus    0.0    5.5       2.0       7.5    Ricker          0.00
+         Harrison    0.0    3.7       2.0       5.7    Ricker          0.00
+           Nadina    0.0    3.7       2.0       5.7    Ricker          0.00
+     Weaver Creek    0.0    4.4       1.0       5.1    Ricker          0.15
+       Birkenhead   12.6   16.6       0.0       0.3 Ricker_RW          0.50
+           Bowron    4.0    7.7       0.0       4.8 Ricker_RW          0.11
+     Early Stuart   17.2   15.0       0.0       1.7 Ricker_RW          0.34
+     Fennel Creek   11.8   16.2       0.0       3.7 Ricker_RW          0.27
+      Late Stuart    4.1    6.3       0.0       1.5 Ricker_RW          0.29
+best model counts:
+
+   Larkin Larkin+RW    Ricker Ricker+RW 
+        6         4         4         5 
+stocks where the plain Ricker is within 2 AIC units of the best model: 4 of 19 
+
+==============================================================================
+D. Leave-future-out check: stationary vs random-walk productivity, all stocks
+==============================================================================
+forecasts made: 379 | random-walk fits without a usable sdreport: 0 | elapsed 11 s
+
+Pooled over stocks (379 forecasts of log(R/S), two brood years ahead):
+                           bias  RMSE mean_log_score cover80
+stationary Ricker         0.579 1.989         -2.315   0.615
+random-walk productivity -0.025 2.022         -2.157   0.641
+(bias > 0 means over-forecasting; mean_log_score: higher is better; cover80: share of observations
+ inside the 80% forecast interval)
+
+Harrison (ocean-type, ages 3-4, escapements up to 400x apart) dominates the pooled RMSE. Without it:
+                          bias  RMSE mean_log_score cover80
+stationary Ricker        0.709 1.565         -2.252   0.616
+random-walk productivity 0.076 1.484         -2.072   0.646
+median absolute error, all stocks: stationary 0.983 | random walk 0.965 
+share of the 379 forecasts that were too high: stationary 0.689 | random walk 0.491 (0.5 if unbiased in the median)
+            stock  n bias_stat bias_rw rmse_stat rmse_rw median_tau
+          Quesnel 20      1.27   -0.06      1.71    1.24       0.24
+      Late Stuart 20      0.89   -0.12      1.31    0.97       0.33
+     Fennel Creek 20      1.13    0.17      1.71    1.39       0.17
+         Stellako 20      1.04    0.25      1.46    1.18       0.14
+          Portage 20      0.90    0.28      1.85    1.66       0.14
+          Seymour 20      0.58    0.11      1.39    1.24       0.12
+           Bowron 20      0.66   -0.12      1.83    1.75       0.13
+     Scotch Creek 20      0.65    0.23      1.55    1.48       0.37
+           Nadina 20      0.30    0.12      1.02    0.98       0.07
+     Early Stuart 20      0.29   -0.34      1.16    1.14       0.22
+ Upper Pitt River 20      0.84    0.16      1.29    1.29       0.34
+     Weaver Creek 20      0.76    0.33      1.87    1.89       0.00
+           Chilko 20      0.43   -0.07      1.24    1.26       0.16
+             Raft 20      0.71    0.13      1.43    1.45       0.23
+            Gates 20      0.54    0.18      1.31    1.34       0.11
+       Birkenhead 20      0.94   -0.08      1.91    1.96       0.22
+     Late Shuswap 20      0.69    0.12      1.93    2.01       0.09
+           Cultus 19      0.10    0.09      1.77    1.88       0.85
+         Harrison 20     -1.75   -1.85      5.57    6.16       0.09
+stocks where the random-walk model has the lower RMSE: 10 of 19 | stocks where the stationary model over-forecasts on average (bias > 0): 18 of 19 

@@ -24,13 +24,14 @@ $$
   f(x) = \sum_{k=1}^4 f(z=k)f(x|z=k) = \sum_{k=1}^4 \pi_k N(x, \mu_k, \sigma_k^2). 
 $$
 
-This is often referred to as a Gaussian mixture model. However, direct maximization of the log likelihood to fit the mixing proportions is not possible due to the sum within a log. Let's code this model up and see how it fits on some simulated data.
+This is often referred to as a Gaussian mixture model. Because of the sum within the log, the maximum of the log likelihood has no closed form, so it has to be found numerically. Let's code this model up and see how it fits on some simulated data.
 
 ```{r}
 #| echo: true
 
 library(RTMB)
 
+set.seed(1)   ## so that the data and the starting values are the same every time
 K <- 4
 nobs <- 100
 mu <- c(35,50,59,72)
@@ -51,20 +52,23 @@ negll <- function(pars){
   REPORT(prob)
   REPORT(sigma)
   
-  ll <- 0
-  for( i in 1:nobs ){
-    pobs <- sum(prob*dnorm(x[i], mu, sigma))  ## Numerical Issues?
-    ll <- ll + log(pobs)
-  }
-  -ll  
+  ## The log of a sum, computed from the logs of its terms. Written as
+  ## log(sum(prob*dnorm(x[i], mu, sigma))), an observation far from every
+  ## component gives log(0) = -Inf. logspace_add(a, b) is log(exp(a) + exp(b))
+  ## without that problem.
+  lprob <- log(prob)
+  ll_obs <- lprob[1] + dnorm(x, mu[1], sigma[1], log = TRUE)
+  for( k in 2:K ) ll_obs <- logspace_add(ll_obs, lprob[k] + dnorm(x, mu[k], sigma[k], log = TRUE))
+  -sum(ll_obs)
 }
 
 param <- list(logitp = c(0,0,0), mu = exp(rnorm(K, 3, 0.25)), logsigma = numeric(K)+2)
 obj <- MakeADFun(negll, param, silent = TRUE)
 fit <- nlminb(obj$par, obj$fn, obj$gr)
-pest <- obj$report()$prob
+pest <- obj$report(fit$par)$prob
 muest <- obj$env$parList(fit$par)$mu
-sigmaest <- obj$report()$sigma
+sigmaest <- obj$report(fit$par)$sigma
+round(rbind(prop = pest, mu = muest), 2)
 ```
 
 This looks terrible. Surely the data aren't this awful. We will compare with a standard mixture model package in R.
@@ -77,11 +81,61 @@ fitmix$lambda
 pest
 ```
 
-Wow, okay maybe not perfect but way better for the same starting values. The R package isn't doing direct maximization. It is using the EM algorithm to iteratively solve this problem. Let's write our own version of this in RTMB. However, this model could be fit as is using `tmbstan` and HMC without writing any new code, except adding some prior distributions.
+Wow, okay maybe not perfect but way better for the same starting values. The R package isn't doing direct maximization. It is using the EM algorithm to iteratively solve this problem.
+
+## What went wrong?
+
+Direct maximization was not the problem. Where we started was. Compare the starting values for the means with the data:
+
+```{r}
+#| echo: true
+
+range(x)
+sort(param$mu)
+```
+
+All four components start below the smallest observation. From there the quickest way uphill is for a component to spread out until it covers all of the data, and the fit ends up no better than a single normal distribution:
+
+```{r}
+#| echo: true
+
+c(direct_fit = fit$objective,
+  one_normal = -sum(dnorm(x, mean(x), sqrt(mean((x - mean(x))^2)), log = TRUE)))
+```
+
+EM is more forgiving of a poor start, which is one reason it is popular for mixtures. Give direct maximization a sensible start and it does the job too. A quick way to get one is k-means clustering:
+
+```{r}
+#| echo: true
+
+km <- kmeans(x, centers = quantile(x, (1:K - 0.5)/K))
+ord <- order(km$centers)
+param_km <- list(logitp = log(km$size[ord][-K]/km$size[ord][K]),
+                 mu = as.numeric(km$centers[ord]),
+                 logsigma = rep(log(sd(x)/K), K))
+
+obj_km <- MakeADFun(negll, param_km, silent = TRUE)
+fit_km <- nlminb(obj_km$par, obj_km$fn, obj_km$gr)
+fit_km$message
+
+## EM from the same start
+fitmix_km <- normalmixEM(x, lambda = itrans(param_km$logitp), 
+  mu = param_km$mu, sigma = exp(param_km$logsigma))
+
+## Negative log-likelihood of the two fits, and the mixing proportions
+round(c(direct = fit_km$objective, EM = -fitmix_km$loglik), 2)
+round(rbind(true = prop, direct = obj_km$report(fit_km$par)$prob, EM = fitmix_km$lambda), 2)
+```
+
+Direct maximization with exact gradients is how mixtures are fitted in Stan, and in `LaMa`, an R package for hidden Markov models that is built on `RTMB`.
+
+One more thing to know. When every component has its own variance, the likelihood of a mixture has no largest value: a component can shrink onto a single observation, and the likelihood then grows without limit. What direct maximization and EM both find is a local maximum. If a fit comes back with a component whose standard deviation is tiny, that is what has happened. A lower bound on the standard deviations, or one variance shared by all components, prevents it.
+
+Let's write our own version of EM in RTMB. However, this model could be fit as is using `tmbstan` and HMC without writing any new code, except adding some prior distributions.
 
 ## Expectation Maximization
 
-Direct maximization of mixture models can be challenging due to a multimodal likelihood. Instead, we employ the expectation-maximization (EM) algorithm. This is a two-step algorithm written in R package RTMB.
+Direct maximization of mixture models can be challenging due to a multimodal likelihood. The expectation-maximization (EM) algorithm is an alternative that depends less on the starting values. This is a two-step algorithm written in R package RTMB.
 If we reintroduce the $z$ term as an augmented variable then given a set of parameter values from iteration $t-1$ of the algorithm, we know that the posterior $z|x$ is
 $$
 P_{(t)}(z = k|x) = \frac{P_{(t-1)}(z = k) f_{(t-1)}(x|z = k)}{\sum_{k=1}^K P_{(t-1)}(z = k) f_{(t-1)}(x|z = k)},
@@ -89,13 +143,13 @@ $$
 where ${(t-1)}$ indicates the function is evaluated at parameter values from the time step $t-1$ of the algorithm. Once we have evaluated the posterior probabilities given the current state of the algorithm, we then compute the objective function $Q_t(\mathbf{\theta}_t|\widehat{\mathbf{\theta}}_{t-1})$, for the parameters $\mathbf{\theta}$,
 
 \begin{align}
-  Q(\mathbf{\theta}_t|\widehat{\mathbf{\theta}}_{t-1})  &= \sum_{i=1}^n \mathbb{E}_{z_i|\widehat{\mathbf{\theta}}_{t-1}}\log\{f(x_i)\},\\
-&= \sum_{i=1}^n \sum_{k=1}^K \log\{P(z_i=k)\} + log\{f(x_i|z_i=k)\} P_{(t)}(z_i = k|x_i).
+  Q(\mathbf{\theta}_t|\widehat{\mathbf{\theta}}_{t-1})  &= \sum_{i=1}^n \mathbb{E}_{z_i|\widehat{\mathbf{\theta}}_{t-1}}\log\{f(x_i, z_i)\},\\
+&= \sum_{i=1}^n \sum_{k=1}^K \left[\log\{P(z_i=k)\} + \log\{f(x_i|z_i=k)\}\right] P_{(t)}(z_i = k|x_i).
 \end{align}
 
-For each $t$, we find $\widehat{\mathbf{\theta}}_t = \text{argmax}_{\mathbf{\theta}_t} Q(\mathbf{\theta}_t|\widehat{\mathbf{\theta}}_{t-1})$ until the log-likelihood between each iteration stays approximately equal to some small threshold value.
+For each $t$, we find $\widehat{\mathbf{\theta}}_t = \text{argmax}_{\mathbf{\theta}_t} Q(\mathbf{\theta}_t|\widehat{\mathbf{\theta}}_{t-1})$ until the log-likelihood changes by less than some small threshold value between iterations.
 
-Let's start with some basic code for to compute the posterior probability of each assignment. Then we will build a nested inner and outer function. The outer computes the posterior and passes it to the inner which is the objective function. We use the `Newton` internal optimizer within the tape to do the inner optimization. Once we have a new set of parameters we loop through and call outer/inner until convergence is reached.
+Let's start with some basic code to compute the posterior probability of each assignment. Then we will build a nested inner and outer function. The outer computes the posterior and passes it to the inner which is the objective function. We use the `Newton` internal optimizer within the tape to do the inner optimization. Once we have a new set of parameters we loop through and call outer/inner until convergence is reached. We start from the k-means values, so that the answer can be compared with the two fits above.
 
 ```{r}
 #| echo: true
@@ -130,6 +184,7 @@ outer <- function(pars_outer){
     }
     return(-ll)
   }
+  ## getValues() is internal to RTMB (hence the :::), so it can change between versions
   start <- (lapply(pars_outer, RTMB:::getValues))
   F <- MakeTape(inner, start)
   Newton <- F$newton(1:length(F$par()), maxit = 1000)
@@ -137,11 +192,11 @@ outer <- function(pars_outer){
   pars_opt
 }
 
-start <- do.call('c', param)
-EM <- MakeTape(outer, param)
+start <- do.call('c', param_km)
+EM <- MakeTape(outer, param_km)
 EM$simplify()
 nll_last <- obj$fn(start)
-newpars <- EM(param)
+newpars <- EM(param_km)
 nll_new <- obj$fn(newpars)
 while(abs(nll_new - nll_last) > 1e-6){
   nll_last <- nll_new
@@ -149,6 +204,9 @@ while(abs(nll_new - nll_last) > 1e-6){
   nll_new <- obj$fn(newpars)
 }
 obj$env$parList(newpars)
-fitmix$lambda - obj$report(newpars)$prob    ## Pretty close!
+
+## Negative log-likelihood: our EM, and direct maximization from the same start
+round(c(EM_in_RTMB = nll_new, direct = fit_km$objective), 3)
+fitmix_km$lambda - obj$report(newpars)$prob    ## Pretty close!
 ```
 

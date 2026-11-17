@@ -121,13 +121,13 @@ max_x$maximum
 - Derivative in multiple dimensions (referred to as 'partial derivatives') and $df$ becomes $\partial f$,
 
 $$
-  \frac{\partial f(x,y)}{x} = \lim_{\Delta \to 0} \frac{f(x + \Delta, y) - f(x,y)}{\Delta}.
+  \frac{\partial f(x,y)}{\partial x} = \lim_{\Delta \to 0} \frac{f(x + \Delta, y) - f(x,y)}{\Delta}.
 $$
 
 - Gradient is the vector of the partial derivatives,
 
 $$
-  \nabla f(x,y) = \Big\{ \frac{\partial f(x,y)}{x}, \frac{\partial f(x,y)}{y} \Big\}
+  \nabla f(x,y) = \Big\{ \frac{\partial f(x,y)}{\partial x}, \frac{\partial f(x,y)}{\partial y} \Big\}
 $$
 
 - Minimization/maximization is where gradient is zero (i.e. all partial derivatives are zero)
@@ -141,7 +141,7 @@ $$
   \frac{d^2f}{dx^2} \approx \frac{f(x+\Delta) - 2f(x) + f(x-\Delta)}{\Delta^2}
 $$
 
-- Identify inflection point:
+- Classify the stationary point:
   * *Minimum* Positive (Increasing at an increasing rate) 
   * *Maximum* Negative (Increasing at a decreasing rate) 
 
@@ -168,12 +168,12 @@ $$
 \end{bmatrix}
 $$
 
-- Identify inflection point:
+- Classify the stationary point:
   * Positive-definite means *Minimum*
   * Negative-definite means *Maximum*
 
 - Variance is inverse of negative Hessian of log-likelihood.
-- If Hessian isn't positive-definite, can't calculate variance.
+- If Hessian isn't positive-definite, can't calculate variance (check that every eigenvalue is positive).
 
 ## Gradients in R
 
@@ -287,10 +287,11 @@ sox <- sox %>% group_by(PopName) %>% mutate(sd_spawners = sd(spawners),  spawner
 
 sox$stock <- as.numeric(factor(sox$PopName))
 nstocks <- max(sox$stock)
+set.seed(1)   ## random but reproducible starting values, in a plausible range
 parameters <- list(
-  alpha = runif(nstocks, 2, 5),
-  logbeta = runif(nstocks, 0, 1),
-  logsigma = runif(nstocks, 3, 5)
+  alpha = runif(nstocks, 1, 3),
+  logbeta = runif(nstocks, -1, 0),
+  logsigma = runif(nstocks, -0.5, 0.5)
 )
 
 sox$logRS <- log(sox$recruits/sox$spawners)
@@ -367,11 +368,11 @@ print(count)
 
 - Random start, evaluate objective function, use gradient to move to new value
 - Run until at maximum/minimum (where gradient is zero)
-- Newton based functions to use `optim` or `nlminb`
+- Gradient-based optimizers: `nlminb`, or `optim(method = "BFGS")` (the `optim` default, Nelder-Mead, uses no gradient)
 - If gradient not provided, then finite differences are used.
 
 ```{r}
-#| echo:true
+#| echo: true
 
 set.seed(24)
 x <- rnorm(100, 0.25, 2)
@@ -437,8 +438,10 @@ lines(c(10, est2$par), c(-negloglik(10), -est2$obj), col = 'red', lty = 2, lwd =
 #| echo: true
 #| fig-align: "center"
 
-par_init <- obj$par + rnorm(length(obj$par))
-mle <- nlminb(obj$par, obj$fn, obj$gr)
+par_init <- obj$par + rnorm(length(obj$par), 0, 0.5)
+## nlminb stops after 150 iterations by default: give it room
+mle <- nlminb(par_init, obj$fn, obj$gr, control = list(eval.max = 1e4, iter.max = 1e4))
+mle$message
 plot(t(obj$gr(mle$par)), ylab = "gr", xlab = "index")
 abline(h = 0, col = 'red', lty = 2)
 ```

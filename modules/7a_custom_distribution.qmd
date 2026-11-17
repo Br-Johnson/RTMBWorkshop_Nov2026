@@ -19,7 +19,7 @@ R package `RTMBdist` has a bunch of additional distributions programmed.
 
 Useful things to know about programming custom functions in `RTMB`
 
-- Check if being used by an `RTMB` function or in base R: `ad_context()`
+- Check if being used by an `RTMB` function or in base R: `ad_context()`. It is internal to `RTMB` (hence the `:::`), so it can change between versions.
 ```{r}
 library(RTMB)
 
@@ -50,7 +50,7 @@ In this case, we have a known marginal distribution that we refer to as the Mult
 $$
 \begin{align}\
   f(\mathbf{x}) & = \int \text{Mult}(\mathbf{x}|M, \boldsymbol{\pi})\text{Dir}(\boldsymbol{\pi} | \boldsymbol{\alpha}) d\boldsymbol{\pi}\\
-  & = \frac{\Gamma(\textstyle \sum \alpha_i)\Gamma(M+1)}{\Gamma(n + \textstyle \sum \alpha_i)} \prod \frac{\Gamma(x_i+\alpha_i)}{\Gamma(\alpha_i)\Gamma(x_i+1)}
+  & = \frac{\Gamma(\textstyle \sum \alpha_i)\Gamma(M+1)}{\Gamma(M + \textstyle \sum \alpha_i)} \prod \frac{\Gamma(x_i+\alpha_i)}{\Gamma(\alpha_i)\Gamma(x_i+1)}
 \end{align}
 $$
 
@@ -72,7 +72,8 @@ rdirmulti <- function(n, size, alpha) {
   nalpha <- length(alpha)
   counts <- matrix(0, nrow = n, ncol = nalpha)
   for( i in 1:n ){
-    theta <- rgamma(length(alpha), 1, alpha)
+    ## Dirichlet(alpha): gamma draws with shape alpha (and a common rate), divided by their sum
+    theta <- rgamma(length(alpha), shape = alpha, rate = 1)
     theta <- theta/sum(theta)
     counts[i,] <- rmultinom(1, size = size, prob = theta)
   }  
@@ -98,7 +99,7 @@ ddirmulti <- function(x, size, alpha, log = FALSE) {
     return(0)
   }
   if(inherits(x, "osa")) {
-    return(ddirmulti_osa(x, alpha, log))
+    stop("One step ahead residuals are not implemented for ddirmulti()")
   }
   alpha0 <- sum(alpha)
 
@@ -110,17 +111,33 @@ ddirmulti <- function(x, size, alpha, log = FALSE) {
   return(exp(logdens))
 }
 
-## Make sure we got it right!
-x <- rdirmulti(1, 5, c(1,1,1))
-ddirmulti(x, 5, c(1,1,1))
-RTMBdist::ddirmult(x, 5, c(1,1,1))
+## Make sure we got it right! Test with values of alpha that are not all equal,
+## so that a mistake in how alpha is used shows up.
+alpha <- c(1, 5, 20)
+set.seed(1)
+x <- rdirmulti(1, 5, alpha)
+ddirmulti(x, 5, alpha)
+if(requireNamespace("RTMBdist", quietly = TRUE)) RTMBdist::ddirmult(x, 5, alpha)
+
+## Two checks that need no other package.
+## 1. A density sums to one over every possible outcome:
+all_x <- expand.grid(x1 = 0:5, x2 = 0:5)
+all_x$x3 <- 5 - all_x$x1 - all_x$x2
+all_x <- as.matrix(all_x[all_x$x3 >= 0, ])
+sum(apply(all_x, 1, ddirmulti, size = 5, alpha = alpha))
+
+## 2. The simulator agrees with it: the mean proportions should be alpha/sum(alpha)
+sims <- rdirmulti(10000, 5, alpha)
+round(rbind(simulated = colMeans(sims)/5, expected = alpha/sum(alpha)), 3)
 ```
 
-Make sure we can simulate correctly and it compiles in `RTMB`.
+Make sure it compiles in `RTMB`, that we can recover the values used to simulate, and that we can simulate from the fitted model.
 
 ```{r}
 
-x <- rdirmulti(10, 5, c(1,1,1))
+set.seed(2)
+alpha_true <- c(2, 4, 8)
+x <- rdirmulti(200, 5, alpha_true)
 
 negloglik <- function(pars){
   getAll(pars)
@@ -129,45 +146,28 @@ negloglik <- function(pars){
 
   ll <- 0
   for( i in 1:nrow(x) ){
-    ll <- ll + ddirmulti(x[i,], size = 5, alpha = alpha)
+    ## log = TRUE: a log-likelihood is a sum of log densities
+    ll <- ll + ddirmulti(x[i,], size = 5, alpha = alpha, log = TRUE)
   }
   -ll
 }
-obj <- MakeADFun(negloglik, list(logalpha = c(1,1,1)), silent = TRUE)
+obj <- MakeADFun(negloglik, list(logalpha = c(0,0,0)), silent = TRUE)
 obj$fn()
 obj$gr()
-obj$simulate(c(0,1,2))
 
-# osa_res <- oneStepPredict(
-#   obj = obj,
-#   observation.name = "x",
-#   method = "oneStepGeneric",    # Best suited for discrete multivariate data
-#   discrete = TRUE
-# )
+## Fit, and compare with the values used to simulate
+fit <- nlminb(obj$par, obj$fn, obj$gr)
+fit$message
+est <- unname(fit$par)
+se <- unname(sqrt(diag(sdreport(obj)$cov.fixed)))   ## standard errors of logalpha
+round(rbind(true = alpha_true, estimate = exp(est), lower = exp(est - 1.96*se), upper = exp(est + 1.96*se)), 2)
 
+## Simulate a new data set from the fitted model (first three rows)
+head(obj$simulate(fit$par)$x, 3)
 ```
 
-Adding option for OSA residuals
+## One step ahead residuals
 
-```{r}
-ddirmulti_osa <- function(x, alpha, log = FALSE) {
-  # Extract the subset that has been observed/kept or is currently the target
-  idx <- order(attr(x@keep, "ord"))
+`ddirmulti()` stops with a message if `oneStepPredict()` asks it for residuals. One step ahead residuals for a vector of counts need the distribution of each count given the counts before it, and the last category carries no information once the others are known. That is easy to get wrong, and `RTMBdist::ddirmult()` does not offer it either. See `osa_multinomial.qmd` in the examples folder for the multinomial case, and Trijoulet et al. (2023, "Model validation for compositional data in stock assessment models", *Fisheries Research* 257: 106487) for residuals built for composition data.
 
-  # Subset x and alpha according to the current conditional state
-  x_sub <- x[idx]
-  alpha_sub <- alpha[idx]
-  
-  for( a in 1:length(alpha-1) )
-  
-  # Calculate conditional density metrics
-  alpha0_sub <- sum(alpha_sub)
-  size_sub <- sum(x_sub@x) # Total counts in the active subset
-  
-  logdens <- lgamma(alpha0_sub) + lgamma(size_sub + 1) - lgamma(size_sub + alpha0_sub)
-  logdens <- logdens + sum(lgamma(x_sub@x + alpha_sub) - lgamma(alpha_sub) - lgamma(x_sub@x + 1))
-  
-  if(log) return(logdens)
-  return(exp(logdens))
-}
 ```

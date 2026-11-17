@@ -18,20 +18,21 @@ $$
 where $\Sigma$ is a covariance matrix. We can induce a flexible low dimension covariance matrix by adding some unique random effects such that for some unobserved variables per year $z_t$, that capture the underlying factors driving stock abundance within each year, and factor loading $\boldsymbol{\lambda}_s$ per stock,
 
 $$
-  \mathbf{z}_i \sim N(\mathbf{0}, \text{I}).
+  \mathbf{z}_t \sim N(\mathbf{0}, \text{I}).
 $$
 We will start with two latent variables, and write 
 
 $$
-  \log(R_i/S_i) =  \alpha_{s_i} + \beta_{s_i} S_i + \mathbf{z}_{t_i}\cdot\boldsymbol{\lambda}_{s_i} + \epsilon_i.
+  \log(R_i/S_i) =  \alpha_{s_i} + u_{t_i} - \beta_{s_i} S_i + \mathbf{z}_{t_i}\cdot\boldsymbol{\lambda}_{s_i} + \epsilon_i,
 $$
+where $u_t$ is the AR(1) year effect shared by all stocks from Module 5.
 
 Fitting this model gives the residual covariance matrix,
 
 $$
   \Sigma = \boldsymbol{\lambda} \boldsymbol{\lambda}^T + \text{diag}(\sigma^2_j).
 $$
-Positive covariance indicates where the stocks tend to vary similarly each year, and negative would be stocks that perform differently.
+Positive covariance indicates where the stocks tend to vary similarly each year, and negative would be stocks that perform differently. This is the covariance left after the shared year effect $u_t$ is taken out. The year effect adds the same amount to every pair of stocks.
 
 ```{r}
 #| echo: false
@@ -63,68 +64,131 @@ nyears <- max(sox$time)
 minyear <- min(sox$yr)
 sox$logRS <- log(sox$recruits/sox$spawners)
 nobs <- nrow(sox)
+stock_names <- sox %>% select(stock, PopName, MU) %>% distinct() %>% arrange(stock)
 
-parameters <- list(
-  alpha0 = runif(1, 2, 5),
-  re = rnorm(nstocks),
-  logbeta = runif(nstocks, 0, 1),
-  logsigma = runif(nstocks, 3, 5),
-  logsigma_re = runif(1, 0.5, 2),
-  re_time = rnorm(nyears),
-  logitphi = 0,
-  logsigma_time = 0,
-  z = matrix(0, nrow = nyears, ncol = 2),
-  logscale_z = c(0,0),
-  lambda1 = c(1, rnorm(nstocks-1)),
-  lambda2 = c(0,1, rnorm(nstocks-2))
-)
-
-negll <- function(pars){
-  
-  getAll(pars, sox, warn = FALSE)
-  beta <- exp(logbeta)
-  
-  logRS <- OBS(logRS)
-
-  sigma <- exp(logsigma)
-  sigma_re <- exp(logsigma_re)
-  sigma_time <- exp(logsigma_time)
-  sigma_obs <- sigma[stock]
-  scale_z <- exp(logscale_z)
-  phi <- 2*plogis(logitphi)-1
-  
-  alpha_stock <- re + alpha0
-  ADREPORT(alpha_stock)
-  
-  mu <- AD(numeric(nobs))
-  for( i in 1:nobs ){
-    mu[i] <- alpha_stock[stock[i]] + re_time[time[i]] - beta[stock[i]]*spawners_scaled[i] + 
-      z[time[i],1]*lambda1[stock[i]]*scale_z[1] + z[time[i],2]*lambda2[stock[i]]*scale_z[2]
-  }
-  
-  ## Use this for built in residuals
-  ll <- dautoreg(re_time,phi=phi,scale=sqrt(sigma_time^2/(1-phi^2)), log=TRUE)
-  ## Add in latent variables
-  for( i in 1:2 ) ll <- ll + sum(dnorm(z[,i], 0, 1, log = TRUE))
+## One function for both versions of the model in this document. The switch is
+## fixed when the function is made, not read from a global variable (see Module 6).
+make_negll <- function(penalize){
+  function(pars){
     
-  
-  ll <- ll + sum(dnorm(re, 0, sigma_re, log = TRUE))
-  ll <- ll + sum(dnorm(logRS, mu, sigma_obs, log = TRUE))
-  
-  REPORT(mu)
-  REPORT(re_time)
-  REPORT(sigma_obs)
-  
-  return(-ll)
+    getAll(pars, sox, warn = FALSE)
+    beta <- exp(logbeta)
+    
+    logRS <- OBS(logRS)
+
+    sigma <- exp(logsigma)
+    sigma_re <- exp(logsigma_re)
+    sigma_time <- exp(logsigma_time)
+    sigma_obs <- sigma[stock]
+    scale_z <- exp(logscale_z)
+    phi <- 2*plogis(logitphi)-1
+    
+    alpha_stock <- re + alpha0
+    ADREPORT(alpha_stock)
+    
+    ## One line for all observations: quicker to tape than a loop over rows
+    mu <- alpha_stock[stock] + re_time[time] - beta[stock]*spawners_scaled + 
+      z[time,1]*lambda1[stock]*scale_z[1] + z[time,2]*lambda2[stock]*scale_z[2]
+    
+    ## Use this for built in residuals
+    ll <- dautoreg(re_time,phi=phi,scale=sqrt(sigma_time^2/(1-phi^2)), log=TRUE)
+    ## Add in latent variables
+    for( i in 1:2 ) ll <- ll + sum(dnorm(z[,i], 0, 1, log = TRUE))
+    
+    ll <- ll + sum(dnorm(re, 0, sigma_re, log = TRUE))
+    ll <- ll + sum(dnorm(logRS, mu, sigma_obs, log = TRUE))
+
+    ## Penalties: explained and used further down
+    if(penalize){
+      ll <- ll + sum(dnorm(lambda1, 0, 1, log = TRUE)) + sum(dnorm(lambda2, 0, 1, log = TRUE))
+      ll <- ll + sum(dgamma(sigma, shape = 2, rate = 2, log = TRUE))
+    }
+    
+    REPORT(mu)
+    REPORT(re_time)
+    REPORT(sigma_obs)
+    
+    return(-ll)
+  }
 }
 
-obj <- MakeADFun(func = negll, parameters = parameters, random = c("re", "re_time", "z"), 
-  map = list(lambda1 = factor(c(NA, 2:nstocks)), lambda2 = factor(c(NA, NA, 3:nstocks))), 
-  silent = TRUE)
-fit <- nlminb(obj$par, obj$fn, obj$gr)
-sox$expected <- obj$report()$mu
-sox$sigma <- obj$report()$sigma_obs
-re_time <- obj$report()$re_time
+## Factor models can have more than one local optimum, so we fit from several
+## starting points. The seed makes each start reproducible.
+fit_lvm <- function(seed, penalize){
+  set.seed(seed)
+  parameters <- list(
+    alpha0 = runif(1, 1, 3),
+    re = rnorm(nstocks, 0, 0.1),
+    logbeta = runif(nstocks, -1, 0),
+    logsigma = runif(nstocks, -0.5, 0.5),
+    logsigma_re = log(0.5),
+    re_time = rep(0, nyears),
+    logitphi = 0,
+    logsigma_time = log(0.5),
+    z = matrix(0, nrow = nyears, ncol = 2),
+    logscale_z = c(0,0),
+    lambda1 = c(1, rnorm(nstocks-1, 0, 0.5)),
+    lambda2 = c(0,1, rnorm(nstocks-2, 0, 0.5))
+  )
+  obj <- MakeADFun(func = make_negll(penalize), parameters = parameters, random = c("re", "re_time", "z"), 
+    map = list(lambda1 = factor(c(NA, 2:nstocks)), lambda2 = factor(c(NA, NA, 3:nstocks))), 
+    silent = TRUE)
+  fit <- nlminb(obj$par, obj$fn, obj$gr, control = list(eval.max = 1e4, iter.max = 1e4))
+  list(obj = obj, fit = fit)
+}
+
+## For each fit: the objective, what the optimizer said, and the smallest residual SD
+summarize_fits <- function(fits){
+  logsigma <- lapply(fits, function(f) f$fit$par[names(f$fit$par) == "logsigma"])
+  data.frame(
+    objective = round(sapply(fits, function(f) f$fit$objective), 2),
+    message = sapply(fits, function(f) f$fit$message),
+    smallest_sigma = signif(sapply(logsigma, function(l) exp(min(l))), 2),
+    stock = sapply(logsigma, function(l) stock_names$PopName[which.min(l)])
+  )
+}
+
+fits <- lapply(1:4, fit_lvm, penalize = FALSE)
+summarize_fits(fits)
+```
+
+Four starting points do not give one answer: the objective differs between them, and not every fit converges. They do have one thing in common. In each, the residual standard deviation of one stock is essentially zero. The model has used a factor to follow that stock exactly, year by year.
+
+This is very suspicious, and it is not telling us something about that stock. It is a well known failure of factor models, called a Heywood case. R's own `factanal()` guards against it by not letting a variance go below a small bound. The best fit sits at the edge of the parameter space, $\sigma = 0$. On the log scale that is minus infinity, which the optimizer can approach but never reach, and that is where the convergence trouble comes from.
+
+## Keeping the model away from the edge
+
+Penalizing the model will help. We add two terms to the log-likelihood (the `penalize` block in the function above):
+
+- A normal density, $N(0, 1)$, on the factor loadings. This pulls loadings that the data say little about towards zero.
+- A gamma density with shape 2 on the residual standard deviations. Its density is zero at $\sigma = 0$, so it keeps each $\sigma$ away from the edge, and it is mild over the values we expect.
+
+Note that the strength of both is fixed. It is tempting to estimate the strength of a penalty as one more parameter, but the optimizer would then set it to zero and switch the penalty off, exactly as with the smoothing parameter in the GAM example. These terms are weak priors, and the estimates are now penalized (or "maximum a posteriori") estimates.
+
+```{r}
+#| echo: true
+#| eval: true
+
+fits_pen <- lapply(1:4, fit_lvm, penalize = TRUE)
+summarize_fits(fits_pen)
+
+## Keep the best of the four and check it
+best <- fits_pen[[which.min(sapply(fits_pen, function(f) f$fit$objective))]]
+obj <- best$obj
+fit <- best$fit
+sdreport(obj)$pdHess
+```
+
+Every start now converges, no residual standard deviation is near zero, and the Hessian is positive definite. There are still two different local optima, which is why we fitted from several starts and kept the best. Try other strengths for the two penalties: does the picture below change?
+
+```{r}
+#| echo: true
+#| eval: true
+
+rep <- obj$report(obj$env$last.par.best)   ## report at the best parameters found
+sox$expected <- rep$mu
+sox$sigma <- rep$sigma_obs
+re_time <- rep$re_time
 
 sox <- sox %>% 
   mutate(resid = logRS - expected) %>%
@@ -133,7 +197,7 @@ sox <- sox %>%
 ggplot(data = sox, aes(x = expected, y = resid_std)) + 
   geom_point() + theme_minimal() + 
   geom_hline(yintercept = 0, col = 'red', linetype = 2) +
-  ylab("Observed - Expected")
+  ylab("Standardized residual")
 
 plot(re_time, type = 'l')
 ```
@@ -146,17 +210,17 @@ By fitting a covariance matrix between stocks, we can use that to cluster them i
 
 ## Stock Covariance
 ## Extract fitted parameters as a list
-pList <- obj$env$parList(fit$par)
+pList <- obj$env$parList(fit$par, obj$env$last.par.best)
 
-## Factor loading matrix
-Lambda <- cbind(pList$lambda1*exp(pList$logscale[1]),
-  pList$lambda2*pList$lambda1*exp(pList$logscale[2]))
+## Factor loading matrix: what multiplies z in the model
+Lambda <- cbind(pList$lambda1*exp(pList$logscale_z[1]),
+  pList$lambda2*exp(pList$logscale_z[2]))
 sigma <- exp(pList$logsigma)
 
 
-## Covariance between stocks
+## Covariance between stocks from the two factors
+## (what is left once the year effect shared by all stocks is taken out)
 Sigma_latent <- Lambda %*% t(Lambda) + diag(sigma^2)
-stock_names <- sox %>% select(stock, PopName, MU) %>% distinct() %>% arrange(stock)
 colnames(Sigma_latent) <- stock_names$PopName
 rownames(Sigma_latent) <- stock_names$PopName
 
@@ -167,99 +231,38 @@ Cor_latent_ord <- Cor_latent[order.single(Cor_latent), order.single(Cor_latent)]
 corrplot(Cor_latent_ord, diag = TRUE, type = "lower", 
          method = "square", tl.cex = 0.5, tl.srt = 45, tl.col = "red")
 
-colnames(Lambda) <- c("lambda_1", "lambda_2")
-stock_names <- cbind(stock_names, Lambda)
-stock_names$sigma <- sigma
-
-ggplot(stock_names, aes(x = lambda_1, y = lambda_2)) + geom_point(colour = "red") + 
-  theme_minimal() + xlab("Latent Variable 1") + ylab("Latent Variable 2") +
-  geom_text(aes(label = PopName))
-
-ggplot(stock_names, aes(x = PopName, y = sigma)) + geom_point(colour = "red") + 
-  theme_minimal() +
-  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+## The shared year effect adds the same covariance to every pair of stocks.
+## Mean correlation between two stocks, without it and with it:
+phi <- 2*plogis(pList$logitphi) - 1
+var_year <- exp(pList$logsigma_time)^2/(1 - phi^2)
+Cor_total <- cov2cor(Sigma_latent + var_year)
+pairs <- upper.tri(Cor_latent)
+round(c(factors_only = mean(Cor_latent[pairs]), with_year_effect = mean(Cor_total[pairs])), 2)
 ```
 
-Main problem with this model is that Scotch Creek variability is almost zero. Very suspicious. Residuals are almost zero. Likely overparameterized. Maybe penalizing the factor loading will help simplify it.
+The plot shows which stocks move together *beyond* what all stocks share. Most of the correlation between two stocks comes from the shared year effect, as the two numbers above show.
 
+The loadings themselves need one more step before we look at them. The two axes are only identified up to a rotation. In this model the axes are fixed by setting the second loading of the first stock in the alphabet (Birkenhead) to zero, so "Latent Variable 1" and "Latent Variable 2" have no meaning of their own. Rotating to a standard position (varimax) makes the plot easier to read, and it changes nothing about the fit: $\boldsymbol{\lambda}\boldsymbol{\lambda}^T$, and so every correlation above, stays the same.
 
 ```{r}
 #| echo: true
 #| eval: true
 
-parameters <- list(
-  alpha0 = runif(1, 2, 5),
-  re = rnorm(nstocks),
-  logbeta = runif(nstocks, 0, 1),
-  logsigma = runif(nstocks, 3, 5),
-  logsigma_re = runif(1, 0.5, 2),
-  re_time = rnorm(nyears),
-  logitphi = 0,
-  logsigma_time = 0,
-  z = matrix(0, nrow = nyears, ncol = 2),
-  logscale_z = c(0,0),
-  lambda1 = c(1, rnorm(nstocks-1)),
-  lambda2 = c(0,1, rnorm(nstocks-2)),
-  logpen = 0
-)
+Lambda_rot <- unclass(varimax(Lambda)$loadings)
+max(abs(Lambda_rot %*% t(Lambda_rot) - Lambda %*% t(Lambda)))   ## the covariance has not changed
 
-negll <- function(pars){
-  
-  getAll(pars, sox, warn = FALSE)
-  beta <- exp(logbeta)
-  
-  logRS <- OBS(logRS)
-  pen <- exp(logpen)
-  sigma <- exp(logsigma)
-  sigma_re <- exp(logsigma_re)
-  sigma_time <- exp(logsigma_time)
-  sigma_obs <- sigma[stock]
-  scale_z <- exp(logscale_z)
-  phi <- 2*plogis(logitphi)-1
-  
-  alpha_stock <- re + alpha0
-  ADREPORT(alpha_stock)
-  
-  mu <- AD(numeric(nobs))
-  for( i in 1:nobs ){
-    mu[i] <- alpha_stock[stock[i]] + re_time[time[i]] - beta[stock[i]]*spawners_scaled[i] + 
-      z[time[i],1]*lambda1[stock[i]]*scale_z[1] + z[time[i],2]*lambda2[stock[i]]*scale_z[2]
-  }
-  
-  ## Use this for built in residuals
-  ll <- dautoreg(re_time,phi=phi,scale=sqrt(sigma_time^2/(1-phi^2)), log=TRUE)
-  ## Add in latent variables
-  for( i in 1:2 ) ll <- ll + sum(dnorm(z[,i], 0, 1, log = TRUE))
-    
-  
-  ll <- ll + sum(dnorm(re, 0, sigma_re, log = TRUE))
-  ll <- ll + sum(dnorm(logRS, mu, sigma_obs, log = TRUE))
-  
-  REPORT(mu)
-  REPORT(re_time)
-  REPORT(sigma_obs)
-  
-  return(-ll + pen/2*sum(lambda1^2 + lambda2^2))
-}
-
-obj <- MakeADFun(func = negll, parameters = parameters, random = c("re", "re_time", "z"), 
-  map = list(lambda1 = factor(c(NA, 2:nstocks)), lambda2 = factor(c(NA, NA, 3:nstocks))),
-  silent = TRUE)
-fit <- nlminb(obj$par, obj$fn, obj$gr)
-sox$expected <- obj$report()$mu
-sox$sigma <- obj$report()$sigma_obs
-re_time <- obj$report()$re_time
-
-pList <- obj$env$parList(fit$par)
-stock_names$lambda_1 <- pList$lambda1
-stock_names$lambda_2 <- pList$lambda2
-stock_names$sigma <- exp(pList$logsigma)
+colnames(Lambda_rot) <- c("lambda_1", "lambda_2")
+stock_names <- cbind(stock_names, Lambda_rot)
+stock_names$sigma <- sigma
 
 ggplot(stock_names, aes(x = lambda_1, y = lambda_2)) + geom_point(colour = "red") + 
-  theme_minimal() + xlab("Latent Variable 1") + ylab("Latent Variable 2") +
+  theme_minimal() + xlab("Latent Variable 1 (rotated)") + ylab("Latent Variable 2 (rotated)") +
+  scale_x_continuous(expand = expansion(mult = 0.15)) +   ## room for the labels at the edges
   geom_text(aes(label = PopName))
 
 ggplot(stock_names, aes(x = PopName, y = sigma)) + geom_point(colour = "red") + 
   theme_minimal() +
   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
 ```
+
+Packages that fit this kind of model for you, and handle the rotation: `gllvm`, `glmmTMB` (the `rr()` covariance structure), and `MARSS` or `bayesdfa` for dynamic factor analysis. They are good to check a hand-coded model against.

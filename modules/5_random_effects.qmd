@@ -23,7 +23,7 @@ execute:
 
 $$
 \begin{align}
-  \log(R_i/S_i) & =  \alpha_{s_i} + \beta_{s_i} S_i + \epsilon_i \\
+  \log(R_i/S_i) & =  \alpha_{s_i} - \beta_{s_i} S_i + \epsilon_i \\
   \alpha_{s} & \sim N(\alpha_0, \eta^2) \\
   \epsilon_i & \sim N(0, \sigma_{s_i}^2) \\
   s & \in \{1,\ldots,n_{s}\}  
@@ -53,14 +53,16 @@ sox <- sox %>% group_by(PopName) %>% mutate(sd_spawners = sd(spawners),  spawner
   * Write y as a function of a standard dnormal. 
   * `dnorm(z, 0, sigma)`
   * `y = mu + z`
-- Option 3: Uncentered
+- Option 3: Non-centered
   * Write y as a function of a standard dnormal. 
   * `dnorm(z, 0, 1)`
   * `y = mu + z*sigma`
 
-- All models are numerically the same, but sometimes one is easier to fit than the other.
+- All three are mathematically the same model, but sometimes one is easier to fit than the other.
 
 - I like option 2 generally, but HMC (Stan) likes option 3.
+
+- For effects that follow each other in time, write the values themselves (options 1 and 2), not standardized steps: that keeps the Hessian sparse, which is what makes RTMB fast.
 
 ## Coding in RTMB
 
@@ -70,12 +72,13 @@ library(RTMB)
 
 sox$stock <- as.numeric(factor(sox$PopName))
 nstocks <- max(sox$stock)
+set.seed(1)
 parameters <- list(
-  alpha0 = runif(1, 2, 5),
-  re = rnorm(nstocks),
-  logbeta = runif(nstocks, 0, 1),
-  logsigma = runif(nstocks, 3, 5),
-  logsigma_re = runif(1, 0.5, 2)
+  alpha0 = runif(1, 1, 3),
+  re = rnorm(nstocks, 0, 0.1),
+  logbeta = runif(nstocks, -1, 0),
+  logsigma = runif(nstocks, -0.5, 0.5),
+  logsigma_re = log(0.5)
 )
 
 sox$logRS <- log(sox$recruits/sox$spawners)
@@ -100,14 +103,18 @@ negll <- function(pars){
   return(-ll)
 }
 
+## No `random` argument yet: this maximizes the joint likelihood of the data AND the random effects
 obj <- MakeADFun(func = negll, parameters = parameters, silent = TRUE)
-fit <- nlminb(obj$par, obj$fn, obj$gr)
+fit <- nlminb(obj$par, obj$fn, obj$gr, control = list(eval.max = 1e4, iter.max = 1e4))
+fit$message
+exp(fit$par["logsigma_re"])   ## something has gone wrong...
 ```
 
 ## Fitting Random Effects
 
 - A random effect is an unobserved random variable in the model
 - We cannot do direct maximization on the joint likelihood
+  * That is what the previous slide tried: the joint likelihood can always be increased by shrinking the random effects and their standard deviation towards zero together
 - Options are:
   * Use MCMC and sample the random effects
   * Use the EM algorithm to find the expected values of the random effects and find the MLE of an objective function.
@@ -127,7 +134,7 @@ fit <- nlminb(obj$par, obj$fn, obj$gr)
 - In this case, the unconditional (marginal) distribution of $x$ is
 
 $$
-  p(x) = p(z = 0) + p(z=1)p(x|z = 1)
+  p(x) = p(z = 0)\,I(x = 0) + p(z=1)\,p(x|z = 1)
 $$
 
 
@@ -157,18 +164,18 @@ dnorm(0.5, 1, sqrt(0.5^2+0.25^2)) ## Known Marginal
 
 - Consider the function $f(x)$, that is complex and hard to integrate
 
-- If we make some assumptions that it is approximately Guassian,
+- If we make some assumptions that it is approximately Gaussian,
 
 $$
-  f(x) \approx g(\widehat{x}) \sqrt{2\pi}\sigma N(\widehat{x}, \sigma^2),
+  f(x) \approx f(\widehat{x}) \sqrt{2\pi}\sigma \, N(x; \widehat{x}, \sigma^2),
 $$
-where $\widehat{x}$ is the mode of $x$, and $\sigma = \frac{1}{-\log(f(x))''_\widehat{x}}$, the second derivative evaluated at the mode. 
+where $\widehat{x}$ is the mode of $f$, and $\sigma^2 = \frac{1}{-\log(f(x))''_\widehat{x}}$, from the second derivative evaluated at the mode. 
 
 - This function is easy to integrate as a Normal distribution and
 
 \begin{align}
-  \int_\infty^\infty f(x)dx & \approx g(\widehat{x}) \sqrt{2\pi}\sigma N(\widehat{x}, \sigma^2)\\
-  & = g(\widehat{x}) \sqrt{2\pi}\sigma
+  \int_{-\infty}^{\infty} f(x)dx & \approx f(\widehat{x}) \sqrt{2\pi}\sigma \int_{-\infty}^{\infty} N(x; \widehat{x}, \sigma^2) dx\\
+  & = f(\widehat{x}) \sqrt{2\pi}\sigma
 \end{align}
 
 ::: {#my-long-container style="height: 400px; border: 1px solid #ccc;"}
@@ -206,7 +213,9 @@ lines(x, apprx(x, xhat, sig, a, b), col = 'blue')
   
 - If highly skewed then less accurate
 
-- With more data, the likelihood is smooth and has a sharp peak.
+- With more data *for each random effect*, its likelihood is smooth and has a sharp peak. Adding more groups with little data in each does not help.
+
+- Exact when the random effects and the data are both Gaussian. Least accurate for binary data or small counts with few observations per random effect.
 
 - Steps are
   * Maximize $f(\textbf{x}, \textbf{u})$ with respect to the random effects, $\textbf{u}$, with fixed parameter values of $\boldsymbol{\theta}$
@@ -237,7 +246,7 @@ pois_gamma <- \(theta){
 }
 ## Manual Laplace
 nb_approx <- function(r, prob) {
-  mle <- optimize(\(u){pois_gamma(c(u, r, prob))}, 0, lower = 0, upper = 100)
+  mle <- optimize(\(u){pois_gamma(c(u, r, prob))}, lower = -10, upper = 10)   ## u = log(lambda)
   u_hat <- mle$minimum
   H <- pracma::hessian(\(u){pois_gamma(c(u, r, prob))}, u_hat)
   mle$objective - 0.5 * log(2 * pi) + 0.5 * log(drop(H))
@@ -298,21 +307,31 @@ nll_exact(c(1, 1.5, 2))
 
 ## Back to Sockeye
 
-- RTMB makes it really easy to compute the marginal likelihood.
+- RTMB makes it really easy to compute the marginal likelihood: name the random effects.
+
+```{r}
+#| echo: true
+
+obj <- MakeADFun(func = negll, parameters = parameters, random = "re", silent = TRUE)
+fit <- nlminb(obj$par, obj$fn, obj$gr, control = list(eval.max = 1e4, iter.max = 1e4))
+fit$message
+exp(fit$par["logsigma_re"])
+```
 
 - They even make it easy to do a basic check if the Laplace approximation is working.
   * Based on checking if gradient of negative log-likelihood is zero.
   * If approximation is bad, average gradient is not zero
+  * Use many more simulations than parameters (there are 40 here). With the default `n = 100` the p-value comes out too small even when the approximation is exact, as it is for this model.
 
 ```{r}
 #| echo: true
 #| eval: false
 
-obj <- MakeADFun(func = negll, parameters = parameters, random = "re", silent = TRUE)
-fit <- nlminb(obj$par, obj$fn, obj$gr)
-check <- checkConsistency(obj)
+check <- checkConsistency(obj, n = 2000)
 s <- summary(check)
 s$marginal$p.value
+## Estimated bias caused by the approximation, in units of standard error
+max(abs(s$marginal$bias)/sqrt(diag(sdreport(obj)$cov.fixed)))
 ```
 
 ```{r}
@@ -320,9 +339,54 @@ s$marginal$p.value
 #| echo: true
 #| fig-align: "center"
 
-resids <- oneStepPredict(obj, discrete=FALSE, trace=FALSE)
-qqnorm(resids$res); abline(0,1)
+resids <- oneStepPredict(obj, method = "fullGaussian", trace = FALSE)
+qqnorm(resids$residual); abline(0,1)
 ```
+
+## Check Against a Package
+
+- Before trusting a model you coded yourself, fit the same model with a package, if one can.
+- `glmmTMB` can fit this one: a random intercept for each stock, a slope for each stock, and a residual standard deviation for each stock.
+
+```{r}
+#| echo: true
+#| eval: !expr requireNamespace("glmmTMB", quietly = TRUE)
+
+library(glmmTMB)
+fit_glmm <- glmmTMB(logRS ~ 1 + PopName:spawners_scaled + (1 | PopName),
+                    dispformula = ~ 0 + PopName, data = sox)
+
+## Negative log-likelihood and between-stock standard deviation
+round(rbind(RTMB = c(nll = fit$objective, sigma_re = exp(fit$par[["logsigma_re"]])),
+            glmmTMB = c(-as.numeric(logLik(fit_glmm)), attr(VarCorr(fit_glmm)$cond$PopName, "stddev"))), 3)
+
+## glmmTMB does not force the slopes to be negative. Are they all negative anyway?
+all(fixef(fit_glmm)$cond[-1] < 0)
+```
+
+- Same likelihood, same answer.
+
+## How Well Do We Know the Variance?
+
+- Maximum likelihood underestimates a variance when many mean parameters are estimated alongside it (the $n/(n-a)$ correction in the pre-course material).
+- REML is the general fix: integrate the mean parameters out too. In RTMB, add them to `random`.
+- Report an interval for a variance parameter, not just the estimate. The profile likelihood is the honest one.
+
+```{r}
+#| echo: true
+
+## REML for the common intercept: integrate alpha0 out together with the random effects
+obj_reml <- MakeADFun(func = negll, parameters = parameters, random = c("re", "alpha0"), silent = TRUE)
+fit_reml <- nlminb(obj_reml$par, obj_reml$fn, obj_reml$gr, control = list(eval.max = 1e4, iter.max = 1e4))
+c(ML = exp(fit$par[["logsigma_re"]]), REML = exp(fit_reml$par[["logsigma_re"]]))
+
+## 95% profile likelihood interval for sigma_re (ML fit)
+prof <- TMB::tmbprofile(obj, "logsigma_re", trace = FALSE, parm.range = c(log(0.001), Inf))
+exp(confint(prof))
+```
+
+- No lower limit (`NA`): these data cannot rule out $\sigma_{re} = 0$, that is, no difference in productivity among stocks.
+- Integrating out the 19 slopes as well (written without `exp()`, so the model is linear in them) gives full REML, which is what `glmmTMB(..., REML = TRUE)` does.
 
 ## Time Varying Productivity
 
@@ -348,7 +412,7 @@ $$
 - First $(\phi + 1)/2 \in (0,1)$, then it's a logit.
 - Back transform inverse logit times 2 minus 1
 
-## Sockeye Time Varying Producitivity
+## Sockeye Time Varying Productivity
 
 - Need to temporally align the data!
 
@@ -360,21 +424,21 @@ nyears <- max(sox$time)
 minyear <- min(sox$yr)
 ```
 
-## Sockeye Time Varying Producitivity
+## Sockeye Time Varying Productivity
 
 ```{r}
 #| echo: true 
-#| eval: false
 
+set.seed(1)
 parameters <- list(
-  alpha0 = runif(1, 2, 5),
-  re = rnorm(nstocks),
-  logbeta = runif(nstocks, 0, 1),
-  logsigma = runif(nstocks, 3, 5),
-  logsigma_re = runif(1, 0.5, 2),
-  re_time = rnorm(nyears),
+  alpha0 = runif(1, 1, 3),
+  re = rnorm(nstocks, 0, 0.1),
+  logbeta = runif(nstocks, -1, 0),
+  logsigma = runif(nstocks, -0.5, 0.5),
+  logsigma_re = log(0.5),
+  re_time = rep(0, nyears),
   logitphi = 0,
-  logsigma_time = 0
+  logsigma_time = log(0.5)
 )
 
 negll_ar <- function(pars){
@@ -407,7 +471,7 @@ negll_ar <- function(pars){
 }
 
 obj_ar <- MakeADFun(func = negll_ar, parameters = parameters, random = c("re", "re_time"), silent = TRUE)
-fit_ar <- nlminb(obj_ar$par, obj_ar$fn, obj_ar$gr)
+fit_ar <- nlminb(obj_ar$par, obj_ar$fn, obj_ar$gr, control = list(eval.max = 1e4, iter.max = 1e4))
 ```
 
 
@@ -415,27 +479,40 @@ fit_ar <- nlminb(obj_ar$par, obj_ar$fn, obj_ar$gr)
 
 ```{r}
 #| echo: true
-#| eval: false
 
-re_time <- obj_ar$report()$re_time
+re_time <- obj_ar$report(obj_ar$env$last.par.best)$re_time
 ggplot() + geom_line(aes(x = minyear+0:(nyears-1), y = re_time)) + theme_minimal() + geom_hline(yintercept = 0, col = 'red', linetype = 'dashed') + xlab("Year") + ylab("Productivity Time Effect")
+```
+
+## Is the Year Effect Worth It?
+
+- Compare models fitted to the same data by their marginal likelihood, for example with AIC.
+- AIC = 2 × (negative log-likelihood) + 2 × (number of fixed effects). Lower is better.
+- Take care near a boundary: a variance cannot go below zero, so small differences (around 2) are not decisive.
+- Here the difference is large: the stocks share good and bad years.
+
+```{r}
+#| echo: true
+
+aic <- function(fit) 2*fit$objective + 2*length(fit$par)
+c(no_year_effect = aic(fit), ar1_year_effect = aic(fit_ar))
 ```
 
 ## Using RTMB's AR Distribution
 
 ```{r}
 #| echo: true
-#| eval: false
 
+set.seed(1)
 parameters <- list(
-  alpha0 = runif(1, 2, 5),
-  re = rnorm(nstocks),
-  logbeta = runif(nstocks, 0, 1),
-  logsigma = runif(nstocks, 3, 5),
-  logsigma_re = runif(1, 0.5, 2),
-  re_time = rnorm(nyears),
+  alpha0 = runif(1, 1, 3),
+  re = rnorm(nstocks, 0, 0.1),
+  logbeta = runif(nstocks, -1, 0),
+  logsigma = runif(nstocks, -0.5, 0.5),
+  logsigma_re = log(0.5),
+  re_time = rep(0, nyears),
   logitphi = 0,
-  logsigma_time = 0
+  logsigma_time = log(0.5)
 )
 
 negll_autoreg <- function(pars){
@@ -466,7 +543,7 @@ negll_autoreg <- function(pars){
 }
 
 obj_autoreg <- MakeADFun(func = negll_autoreg, parameters = parameters, random = c("re", "re_time"), silent = TRUE)
-fit_autoreg <- nlminb(obj_autoreg$par, obj_autoreg$fn, obj_autoreg$gr)
+fit_autoreg <- nlminb(obj_autoreg$par, obj_autoreg$fn, obj_autoreg$gr, control = list(eval.max = 1e4, iter.max = 1e4))
 ```
 
 ## As a Gauss Markov Random Field Distribution
@@ -484,17 +561,17 @@ fit_autoreg <- nlminb(obj_autoreg$par, obj_autoreg$fn, obj_autoreg$gr)
 
 ```{r}
 #| echo: true
-#| eval: false
 
+set.seed(1)
 parameters <- list(
-  alpha0 = runif(1, 2, 5),
-  re = rnorm(nstocks),
-  logbeta = runif(nstocks, 0, 1),
-  logsigma = runif(nstocks, 3, 5),
-  logsigma_re = runif(1, 0.5, 2),
-  re_time = rnorm(nyears),
+  alpha0 = runif(1, 1, 3),
+  re = rnorm(nstocks, 0, 0.1),
+  logbeta = runif(nstocks, -1, 0),
+  logsigma = runif(nstocks, -0.5, 0.5),
+  logsigma_re = log(0.5),
+  re_time = rep(0, nyears),
   logitphi = 0,
-  logsigma_time = 0
+  logsigma_time = log(0.5)
 )
 
 negll_gmrf <- function(pars){
@@ -518,7 +595,7 @@ negll_gmrf <- function(pars){
   Q[cbind(2:nyears,1:(nyears-1))] <- -phi
   Q[cbind(1:(nyears-1), 2:nyears)] <- -phi
   Q <- Q/(sigma_time^2)
-  ll <- ll + dgmrf(re_time, Q=Q, log=TRUE)
+  ll <- dgmrf(re_time, Q=Q, log=TRUE)
 
   ll <- ll + sum(dnorm(re, 0, sigma_re, log = TRUE))
   ll <- ll + sum(dnorm(logRS, mu, sigma[stock], log = TRUE))
@@ -530,18 +607,17 @@ negll_gmrf <- function(pars){
 }
 
 obj_gmrf <- MakeADFun(func = negll_gmrf, parameters = parameters, random = c("re", "re_time"), silent = TRUE)
-fit_gmrf <- nlminb(obj_gmrf$par, obj_gmrf$fn, obj_gmrf$gr)
+fit_gmrf <- nlminb(obj_gmrf$par, obj_gmrf$fn, obj_gmrf$gr, control = list(eval.max = 1e4, iter.max = 1e4))
 ```
 
 ## What is Best?
 
-- In this example, there is not much in it (gmrf is slowest).
+- In this example, there is not much in it.
 - Usually best to do what is most readable and understandable.
 - Looping through each year is readable and simplest.
 
 ```{r}
 #| echo: true
-#| eval: false 
 
 
 init <- obj_gmrf$par
@@ -566,24 +642,24 @@ microbenchmark::microbenchmark(
 
 ```{r}
 #| echo: true 
-#| eval: false
 
+set.seed(1)
 parameters <- list(
-  alpha0 = runif(1, 2, 5),
-  re = rnorm(nstocks),
-  logbeta = runif(nstocks, 0, 1),
-  logsigma = runif(nstocks, 3, 5),
-  logsigma_re = runif(1, 0.5, 2),
-  re_time = rnorm(nyears),
+  alpha0 = runif(1, 1, 3),
+  re = rnorm(nstocks, 0, 0.1),
+  logbeta = runif(nstocks, -1, 0),
+  logsigma = runif(nstocks, -0.5, 0.5),
+  logsigma_re = log(0.5),
+  re_time = rep(0, nyears),
   logitphi = 0,
-  logsigma_time = 0
+  logsigma_time = log(0.5)
 )
 
 obj <- MakeADFun(func = negll_ar, parameters = parameters, 
   map = list(logitphi = factor(NA)), random = c("re", "re_time"), silent = TRUE)
-fit <- nlminb(obj$par, obj$fn, obj$gr)
+fit <- nlminb(obj$par, obj$fn, obj$gr, control = list(eval.max = 1e4, iter.max = 1e4))
 
-re_time2 <- obj$report()$re_time
+re_time2 <- obj$report(obj$env$last.par.best)$re_time
 ggplot() + geom_line(aes(x = minyear+0:(nyears-1), y = re_time)) + 
   geom_line(aes(x = minyear+0:(nyears-1), y = re_time2), col = 'red') +
 theme_minimal() + geom_hline(yintercept = 0, col = 'red', linetype = 'dashed') + xlab("Year") + ylab("Productivity Time Effect")
@@ -592,6 +668,10 @@ theme_minimal() + geom_hline(yintercept = 0, col = 'red', linetype = 'dashed') +
 ## Practical
 
 - What improvements can we make to this model?
+- Some to try, comparing AIC each time:
+  * A random walk in place of the AR(1): `dnorm(diff(re_time), 0, sigma_time)`, with `re_time[1]` given its own distribution
+  * A separate time series for each stock, or for groups of stocks
+  * Spawners from the three previous brood years (the Larkin model) for stocks with a dominant cycle line
 
 ## End of Module
 

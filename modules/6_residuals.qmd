@@ -28,8 +28,10 @@ $$
 - Pearson residuals for GLMs, but shouldn't really use them...
 
 $$
-  r = \frac{\text{observed} - \text{expected}}{\sqrt{\text{expected}}}
+  r = \frac{\text{observed} - \text{expected}}{\sqrt{\text{Var}(\text{observed})}}
 $$
+
+  * for Poisson data the variance equals the expected value, which gives the familiar $\sqrt{\text{expected}}$
 
 - Randomized Quantile Residuals
   * considered always an improvement for GLM
@@ -48,7 +50,7 @@ $$
 
 $$
 \begin{align}
-  \log(R_i/S_i) & =  \alpha_{s_i} + u_t + \beta_{s_i} S_i + \epsilon_i \\
+  \log(R_i/S_i) & =  \alpha_{s_i} + u_t - \beta_{s_i} S_i + \epsilon_i \\
   \alpha_{s} & \sim N(\alpha_0, \eta^2) \\
   \epsilon_i & \sim N(0, \sigma_{s_i}^2) \\
   u_t & \sim N(\phi u_{t-1}, \gamma^2) \\
@@ -85,15 +87,20 @@ nyears <- max(sox$time)
 minyear <- min(sox$yr)
 sox$logRS <- log(sox$recruits/sox$spawners)
 
+## One step ahead residuals (later in this module) predict each observation from
+## the ones before it in the data, so put the data in time order first.
+sox <- sox %>% arrange(yr, stock)
+
+set.seed(1)   ## random but reproducible starting values, in a plausible range
 parameters <- list(
-  alpha0 = runif(1, 2, 5),
-  re = rnorm(nstocks),
-  logbeta = runif(nstocks, 0, 1),
-  logsigma = runif(nstocks, 3, 5),
-  logsigma_re = runif(1, 0.5, 2),
-  re_time = rnorm(nyears),
-  logtphi = 0,
-  logsigma_time = 0
+  alpha0 = runif(1, 1, 3),
+  re = rnorm(nstocks, 0, 0.1),
+  logbeta = runif(nstocks, -1, 0),
+  logsigma = runif(nstocks, -0.5, 0.5),
+  logsigma_re = log(0.5),
+  re_time = rep(0, nyears),
+  logitphi = 0,
+  logsigma_time = log(0.5)
 )
 
 negll <- function(pars){
@@ -107,13 +114,12 @@ negll <- function(pars){
   sigma_re <- exp(logsigma_re)
   sigma_time <- exp(logsigma_time)
   sigma_obs <- sigma[stock]
-  phi <- 2*plogis(logtphi)-1
+  phi <- 2*plogis(logitphi)-1
   
   alpha_stock <- re + alpha0
   ADREPORT(alpha_stock)
   
   mu <- alpha_stock[stock] + re_time[time] - beta[stock]*spawners_scaled
-  logRS <- OBS(logRS)
   
   ## Use this for built in residuals
   ll <- dautoreg(re_time,phi=phi,scale=sqrt(sigma_time^2/(1-phi^2)), log=TRUE)
@@ -129,9 +135,12 @@ negll <- function(pars){
 }
 
 obj <- MakeADFun(func = negll, parameters = parameters, random = c("re", "re_time"), silent = TRUE)
-fit <- nlminb(obj$par, obj$fn, obj$gr)
-sox$expected <- obj$report()$mu
-sox$sigma <- obj$report()$sigma_obs
+fit <- nlminb(obj$par, obj$fn, obj$gr, control = list(eval.max = 1e4, iter.max = 1e4))
+fit$message
+## report at the best parameters found, not the last ones the optimizer tried
+rep <- obj$report(obj$env$last.par.best)
+sox$expected <- rep$mu
+sox$sigma <- rep$sigma_obs
 sox <- sox %>% 
   mutate(resid = logRS - expected) %>%
   mutate(resid_std = resid/sigma)
@@ -199,7 +208,8 @@ for( i in 1:1000 ){
  sims <- cbind(sims, rnorm(nrow(sox), sox$expected, sox$sigma))
 }
 ## What proportion of simulations are less than observed?
-sox$cdf_sim <- sapply(1:nrow(sox), FUN = function(i){(sum(sims[i, ] < sox$logRS[i]))/1000})
+## (+0.5 and +1 keep the answer away from exactly 0 or 1, where qnorm() is infinite)
+sox$cdf_sim <- sapply(1:nrow(sox), FUN = function(i){(sum(sims[i, ] < sox$logRS[i]) + 0.5)/(1000 + 1)})
 
 ## RQR residual
 sox$rqr <- qnorm(sox$cdf)
@@ -233,21 +243,22 @@ ggplot(data = sox %>% filter(PopName == "Harrison"), aes(x = time, y = resid,)) 
 
 - We have assumed that the residuals are independent.
 - If they aren't, then you can get bad looking residuals even if the model is 'correct'
-- Instead, we can condition the residuals on the previous observation
+- Instead, we can condition each residual on all the observations before it
 
 $$
-  (y_i - \widehat{y}_{i|i-1})/\widehat{\sigma}_{i|i-1}
+  (y_i - \widehat{y}_{i|1,\ldots,i-1})/\widehat{\sigma}_{i|1,\ldots,i-1}
 $$
-- In this particular model, we have all observations within a year, conditional on the previous year's random effect and then the stock specific random effect across years.
+- "Before" means earlier in the data vector. That is why we sorted the data by year: each observation is predicted from earlier years (and from the stocks already seen in its own year).
 
 ::: {#my-long-container style="height: 300px; border: 1px solid #ccc;"}
 
 ```{r}
-#| echo: ture
+#| echo: true
 #| out-width: "70%"
 #| fig-align: "center"
 
-resid_osa <- oneStepPredict (obj, trace = FALSE, method="oneStepGeneric")
+## Data and random effects are all normal here, so "fullGaussian" is exact (and fast).
+resid_osa <- oneStepPredict(obj, method = "fullGaussian", trace = FALSE)
 sox$resid_osa <- resid_osa$residual
 
 par(mfrow = c(1,2))
@@ -260,9 +271,89 @@ qqline(resid_osa$residual)
 
 :::
 
+## Which Method?
+
+- `oneStepPredict()` has several methods. Use the first in this list that fits your model:
+  * `"fullGaussian"`: data and random effects all normal. Exact, and takes 3 seconds here.
+  * `"oneStepGaussian"`: normal data, any random effects.
+  * `"cdf"`: every data density has a CDF (`pnorm`, `ppois`, ...). Good for counts.
+  * `"oneStepGeneric"`: anything else. Takes minutes here, and is less accurate.
+- Mark the data with `OBS()`. For counts add `discrete = TRUE` and set a seed.
+- The order of the data matters: sorted differently, you get different (still valid) residuals.
+
+## Are the Residuals Independent in Time?
+
+- A QQ plot checks the shape of the distribution, not independence.
+- Compare each residual with the one from the same stock a year earlier.
+
+```{r}
+#| echo: true
+
+lag1 <- sox %>% group_by(PopName) %>% arrange(yr, .by_group = TRUE) %>%
+  mutate(resid_prev = ifelse(yr - lag(yr) == 1, lag(resid_osa), NA)) %>%
+  ungroup() %>% filter(!is.na(resid_prev))
+
+## All stocks together: correlation and its 95% confidence interval
+ct <- cor.test(lag1$resid_osa, lag1$resid_prev)
+round(c(correlation = unname(ct$estimate), lower = ct$conf.int[1], upper = ct$conf.int[2]), 2)
+
+## The five stocks with the most left over
+lag1 %>% group_by(PopName) %>% summarize(lag1_cor = round(cor(resid_osa, resid_prev), 2)) %>%
+  arrange(desc(lag1_cor)) %>% head(5)
+```
+
+- A shared year effect cannot follow a run of good or bad years in one stock. Try a year effect for each stock (Module 5 practical), or the latent variable example.
+
+## Checking the Random Effects
+
+- Residuals for the data do not check the model for the random effects.
+- The estimated random effects are no use for this: they are shrunk towards zero, so they look better behaved than they are.
+- Instead take **one draw** of the random effects from their distribution given the data (Waagepetersen 2006; Thygesen et al. 2017).
+- Check that draw against what the model says. Look for outlying years, runs of the same sign, and trends.
+
+## One Draw of the Random Effects
+
+```{r}
+#| echo: true
+
+sdr <- sdreport(obj, getJointPrecision = TRUE)
+ir <- obj$env$random                         ## where the random effects are in the parameter vector
+Q <- as.matrix(sdr$jointPrecision[ir, ir])   ## their precision (inverse covariance)
+
+## One draw: mode + R^-1 z has covariance Q^-1 when Q = R'R.
+## Try other seeds: a real problem shows up in almost every draw.
+set.seed(11)
+u <- obj$env$last.par.best[ir] + backsolve(chol(Q), rnorm(length(ir)))
+u_time <- u[names(u) == "re_time"]
+
+## If the AR(1) model is right, these are independent standard normals
+phi <- 2*plogis(fit$par[["logitphi"]]) - 1
+sigma_time <- exp(fit$par[["logsigma_time"]])
+innov <- c(u_time[1]*sqrt(1 - phi^2), u_time[-1] - phi*u_time[-nyears])/sigma_time
+round(c(sd = sd(innov), lag1_cor = acf(innov, plot = FALSE)$acf[2], shapiro_p = shapiro.test(innov)$p.value), 3)
+```
+
+## One Draw of the Random Effects (plot)
+
+```{r}
+#| echo: true
+#| out-width: "85%"
+#| fig-align: "center"
+#| fig-width: 10
+#| fig-height: 4
+
+par(mfrow = c(1,2))
+qqnorm(innov, main = "Year effect steps: QQ plot")
+qqline(innov)
+plot(minyear + 1:nyears - 1, innov, type = "h", xlab = "Brood year", ylab = "Standardized step",
+     main = "Year effect steps over time")
+abline(h = 0, col = "red", lty = 2)
+```
+
 ## End of Module
 
 - See ***osa_multinomial.qmd*** example for a multinomial distribution
+- A residual check has three parts: the shape of the distribution, independence (in time and by group), and the random effects
 - As our model becomes more complicated, we need to think harder about the residual analysis
 - If you have non-normal data, always use RQR residuals, or OSA
 - The more we want to code 'custom' the more work we need to also do for model checking, validation, and reporting

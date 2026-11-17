@@ -1,0 +1,20 @@
+[setup] R 4.3.3 | RTMB 2.0 | TMB 1.9.25 | locale C.UTF-8
+quadrature self-test (100 obs in the group): adaptive -4.38400813 | integrate() -4.38400813 | fixed nodes -4.29432647
+
+==============================================================================
+Laplace vs exact ML for a binary random-intercept model (true SD 1.5, intercept -1, 300 groups)
+==============================================================================
+ obs_per_group total_obs sd_exact sd_laplace ratio_sd b0_exact b0_laplace
+             2       600    1.393      1.087    0.776   -1.009     -0.947
+             5      1500    1.486      1.405    0.945   -1.034     -1.027
+            20      6000    1.499      1.482    0.989   -1.039     -1.038
+           100     30000    1.510      1.507    0.998   -1.036     -1.036
+(means over 30 simulated data sets; ratio_sd = Laplace estimate / exact ML estimate of the SD)
+
+==============================================================================
+Same total number of observations (6000), arranged differently
+==============================================================================
+                    ratio_sd sd_exact sd_laplace
+3000 groups x 2 obs    0.774    1.496      1.160
+60 groups x 100 obs    0.998    1.486      1.483
+=> adding groups does not help the approximation; adding observations per group does.

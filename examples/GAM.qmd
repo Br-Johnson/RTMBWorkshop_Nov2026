@@ -86,13 +86,14 @@ K <- ncol(bsMat)  ## includes boundary knots.
 B <- bsMat
 class(B) <- "matrix"
 
+set.seed(1)   ## random but reproducible starting values, in a plausible range
 parameters <- list(
-  alpha0 = runif(1, 2, 5),
-  re = rnorm(nstocks),
-  logbeta = runif(nstocks, 0, 1),
-  logsigma = runif(nstocks, 3, 5),
-  logsigma_re = runif(1, 0.5, 2),
-  b = rnorm(K)
+  alpha0 = runif(1, 1, 3),
+  re = rnorm(nstocks, 0, 0.1),
+  logbeta = runif(nstocks, -1, 0),
+  logsigma = runif(nstocks, -0.5, 0.5),
+  logsigma_re = log(0.5),
+  b = rep(0, K)
 )
 
 negll <- function(pars){
@@ -109,12 +110,10 @@ negll <- function(pars){
   alpha_stock <- re + alpha0
   ADREPORT(alpha_stock)
   
-  time_effect <- (B %*% b)
+  time_effect <- drop(B %*% b)
   
-  mu <- numeric(nobs)
-  for( i in 1:nobs )  {
-    mu[i] <- alpha_stock[stock[i]] - beta[stock[i]]*spawners_scaled[i] + time_effect[time[i],1]
-  }
+  ## One line for all observations: quicker to tape than a loop over rows
+  mu <- alpha_stock[stock] - beta[stock]*spawners_scaled + time_effect[time]
   ll <- sum(dnorm(re, 0, sigma_re, log = TRUE))
   ll <- ll + sum(dnorm(logRS, mu, sigma_obs, log = TRUE))
   
@@ -127,10 +126,12 @@ negll <- function(pars){
 
 obj <- MakeADFun(func = negll, parameters = parameters, 
   random = "re",  silent = TRUE)
-fit <- nlminb(obj$par, obj$fn, obj$gr)
-sox$expected <- obj$report()$mu
-sox$sigma <- obj$report()$sigma_obs
-smooth_time <- obj$report()$time_effect
+fit <- nlminb(obj$par, obj$fn, obj$gr, control = list(eval.max = 1e4, iter.max = 1e4))
+fit$message
+rep <- obj$report(obj$env$last.par.best)   ## report at the best parameters found
+sox$expected <- rep$mu
+sox$sigma <- rep$sigma_obs
+smooth_time <- rep$time_effect
 
 plot(1:75, smooth_time, type = "l")
 
@@ -141,7 +142,7 @@ sox <- sox %>%
 ggplot(data = sox, aes(x = expected, y = resid_std)) + 
   geom_point() + theme_minimal() + 
   geom_hline(yintercept = 0, col = 'red', linetype = 2) +
-  ylab("Observed - Expected")
+  ylab("Standardized residual")
 ```
 
 This is certainly not working that great. How do we choose the number of knots etc? Instead, let's use thin plate splines and the `mgcv` package to define the basis function.
@@ -174,22 +175,24 @@ fit_gam <- gam(logRS ~ spawners_scaled:PopNamef + s(PopNamef, bs = "re") +
 For thin plate splines, we also apply a penalty term to keep the function smooth and avoid overfitting. The penalty term, for penalty matrix $S$, with smoothing parameter $\lambda$, is added to the negative log likelihood as
 
 $$
-  -l(\boldsymbol{\theta}) + \frac{\lambda}{2}\mathbf{b} S \mathbf{b}^T.
+  -l(\boldsymbol{\theta}) + \frac{\lambda}{2}\mathbf{b}^T S \mathbf{b}.
 $$
 
+## A first attempt: estimate $\lambda$ like any other parameter
 
 ```{r}
 #| echo: true
 #| eval: true
-K <- ncol(B)  ## includes boundary knots.
+K <- ncol(B)
 
+set.seed(1)
 parameters <- list(
-  alpha0 = runif(1, 2, 5),
-  re = rnorm(nstocks),
-  logbeta = runif(nstocks, 0, 1),
-  logsigma = runif(nstocks, 3, 5),
-  logsigma_re = runif(1, 0.5, 2),
-  b = rnorm(K),
+  alpha0 = runif(1, 1, 3),
+  re = rnorm(nstocks, 0, 0.1),
+  logbeta = runif(nstocks, -1, 0),
+  logsigma = runif(nstocks, -0.5, 0.5),
+  logsigma_re = log(0.5),
+  b = rep(0, K),
   loglambda = 0
 )
 
@@ -208,12 +211,9 @@ negll <- function(pars){
   alpha_stock <- re + alpha0
   ADREPORT(alpha_stock)
   
-  time_effect <- (B %*% b)
-  
-  mu <- numeric(nobs)
-  for( i in 1:nobs )  {
-    mu[i] <- alpha_stock[stock[i]] - beta[stock[i]]*spawners_scaled[i] + time_effect[time[i],1]
-  }
+  time_effect <- drop(B %*% b)
+  mu <- alpha_stock[stock] - beta[stock]*spawners_scaled + time_effect[time]
+
   ll <- sum(dnorm(re, 0, sigma_re, log = TRUE))
   ll <- ll + sum(dnorm(logRS, mu, sigma_obs, log = TRUE))
   
@@ -221,19 +221,94 @@ negll <- function(pars){
   REPORT(sigma_obs)
   REPORT(time_effect)
 
-  pen <- lambda/2*t(b)%*%S%*%b
+  pen <- lambda/2*sum(b*drop(S %*% b))
     
   return(-ll + pen)
 }
 
 obj <- MakeADFun(func = negll, parameters = parameters, 
   random = "re",  silent = TRUE)
-fit <- nlminb(obj$par, obj$fn, obj$gr)
-sox$expected <- obj$report()$mu
-sox$sigma <- obj$report()$sigma_obs
-smooth_time <- obj$report()$time_effect
+fit <- nlminb(obj$par, obj$fn, obj$gr, control = list(eval.max = 1e4, iter.max = 1e4))
+fit$message
+exp(fit$par[["loglambda"]])   ## the estimated smoothing parameter
+```
 
-plot(1:75, smooth_time, type = "l")
+The optimizer reports convergence, but look at $\lambda$: it is zero for all practical purposes. The penalty can never be negative, so the lowest value of the objective is always found by switching the penalty off. We are back at an unpenalized curve. A smoothing parameter cannot be estimated this way.
+
+## The smoothing parameter as a variance
+
+The penalty has the same form as a normal distribution for the coefficients. Minus the log density of $\mathbf{b} \sim N(\mathbf{0}, (\lambda S)^{-1})$ is
+
+$$
+  \frac{\lambda}{2}\mathbf{b}^T S \mathbf{b} - \frac{1}{2}\log|\lambda S| + \text{constant}.
+$$
+
+The first term is our penalty. The second term depends on $\lambda$, and it is what was missing above: it stops $\lambda$ from running to zero. So treat the spline coefficients as **random effects** with this distribution, and the Laplace approximation lets us estimate $\lambda$ like any other variance parameter. This is what `mgcv` does when you ask for `method = "REML"` or `"ML"` (Wood 2011).
+
+`mgcv::smooth2random()` does the bookkeeping. It rewrites the basis in two parts:
+
+- `Xf`: the part that the penalty leaves alone (here one column, a straight line). Its coefficients are ordinary parameters.
+- `Zs`: the part that is penalized, rotated so that its coefficients are independent normal random effects with a single standard deviation. A small standard deviation gives a smooth curve.
+
+```{r}
+#| echo: true
+#| eval: true
+
+rs <- smooth2random(sm, "", type = 2)
+Xf <- rs$Xf          ## not penalized
+Zs <- rs$rand[[1]]   ## penalized: coefficients are independent normal random effects
+c(ncol(Xf), ncol(Zs))
+
+set.seed(1)
+parameters <- list(
+  alpha0 = runif(1, 1, 3),
+  re = rnorm(nstocks, 0, 0.1),
+  logbeta = runif(nstocks, -1, 0),
+  logsigma = runif(nstocks, -0.5, 0.5),
+  logsigma_re = log(0.5),
+  bf = rep(0, ncol(Xf)),
+  bs = rep(0, ncol(Zs)),
+  logsigma_s = 0
+)
+
+negll <- function(pars){
+  
+  getAll(pars, sox, warn = FALSE)
+  beta <- exp(logbeta)
+  
+  logRS <- OBS(logRS)
+
+  sigma <- exp(logsigma)
+  sigma_re <- exp(logsigma_re)
+  sigma_s <- exp(logsigma_s)
+  sigma_obs <- sigma[stock]
+
+  alpha_stock <- re + alpha0
+  ADREPORT(alpha_stock)
+  
+  time_effect <- drop(Xf %*% bf + Zs %*% bs)
+  mu <- alpha_stock[stock] - beta[stock]*spawners_scaled + time_effect[time]
+
+  ll <- sum(dnorm(re, 0, sigma_re, log = TRUE))
+  ll <- ll + sum(dnorm(bs, 0, sigma_s, log = TRUE))   ## the penalty, with the term that was missing
+  ll <- ll + sum(dnorm(logRS, mu, sigma_obs, log = TRUE))
+  
+  REPORT(mu)
+  REPORT(sigma_obs)
+  REPORT(time_effect)
+    
+  return(-ll)
+}
+
+## The spline coefficients are now random effects too
+obj <- MakeADFun(func = negll, parameters = parameters, 
+  random = c("re", "bs"),  silent = TRUE)
+fit <- nlminb(obj$par, obj$fn, obj$gr, control = list(eval.max = 1e4, iter.max = 1e4))
+fit$message
+rep <- obj$report(obj$env$last.par.best)
+sox$expected <- rep$mu
+sox$sigma <- rep$sigma_obs
+smooth_time <- rep$time_effect
 
 sox <- sox %>% 
   mutate(resid = logRS - expected) %>%
@@ -242,5 +317,30 @@ sox <- sox %>%
 ggplot(data = sox, aes(x = expected, y = resid_std)) + 
   geom_point() + theme_minimal() + 
   geom_hline(yintercept = 0, col = 'red', linetype = 2) +
-  ylab("Observed - Expected")
+  ylab("Standardized residual")
 ```
+
+## Compare with `mgcv`
+
+We fitted a similar model with `gam()` above. It is not identical: `gam()` assumes one residual standard deviation for all stocks where ours has one for each stock, and it was fitted by REML. The two smooths should still tell the same story.
+
+```{r}
+#| echo: true
+#| eval: true
+
+gam_time <- predict(fit_gam, type = "terms", terms = "s(time)",
+                    newdata = data.frame(time = 1:75, PopNamef = sox$PopNamef[1], spawners_scaled = 0))
+
+## Each smooth is only defined up to a constant, so center both before comparing
+plot(1:75, smooth_time - mean(smooth_time), type = "l", xlab = "time", ylab = "Smooth of time")
+lines(1:75, gam_time - mean(gam_time), col = "red", lty = 2)
+legend("bottomleft", legend = c("RTMB", "mgcv::gam"), col = c("black", "red"), lty = 1:2)
+
+## Effective degrees of freedom of the smooth, out of a possible 9
+round(sum(fit_gam$edf[grep("s\\(time\\)", names(fit_gam$edf))]), 1)
+
+## AIC, to compare with the AR(1) year effect of Module 5
+2*fit$objective + 2*length(fit$par)
+```
+
+The penalty is doing very little here: the smooth uses nearly all of the degrees of freedom the basis allows. The year to year changes shared by the stocks are too abrupt for a smooth curve, and the AR(1) year effect in Module 5 describes them much better (compare the AIC above with the one on the "Is the Year Effect Worth It?" slide).

@@ -29,8 +29,8 @@ execute:
 ## Why RTMB
 
 - R wrapper for TMB
-- Run R code in C++ for speed
-- Automatic Differentiation
+- Records the calculations in your R function once (the 'tape') and replays them in C++
+- Automatic Differentiation: exact gradients and Hessians
 - Fit models with random effects (e.g. Laplace)
 - Easy code checking in R
 
@@ -63,7 +63,7 @@ execute:
 
 ## Outline Day 2
 
-1. (9:00 – 10:00 Custom functions in RTMB, including distributions
+1. (9:00 – 10:00) Custom functions in RTMB, including distributions
 2. (10:00 – 11:00) Computing residuals
 3. (11:00 – 12:00) Write a prediction model for Fraser sockeye
 4. (13:00 – 16:00) Practicals

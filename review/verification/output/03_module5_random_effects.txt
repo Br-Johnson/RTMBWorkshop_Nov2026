@@ -1,0 +1,74 @@
+[setup] R 4.3.3 | RTMB 2.0 | TMB 1.9.25 | locale C.UTF-8
+
+==============================================================================
+A. Joint likelihood (no `random=`), as on the first code slide
+==============================================================================
+seed 1: objective = 1582 | sigma_re = 2.04e-08 | max|re| = 5.76e-14 | conv = 1 (false convergence (8))
+seed 2: objective = 1566 | sigma_re = 9.11e-09 | max|re| = 2.1e-15 | conv = 1 (false convergence (8))
+seed 3: objective = 1571 | sigma_re = 8.86e-09 | max|re| = 2.88e-15 | conv = 1 (false convergence (8))
+The joint density is unbounded as sigma_re -> 0 with re -> 0, so this 'fit' is degenerate.
+With random = "re" (Laplace): objective = 1883.8099 | sigma_re = 0.1056 | conv = 0 (relative convergence (4))
+
+==============================================================================
+B. GMRF slide as written
+==============================================================================
+MakeADFun(negll_gmrf, ...) in a clean session ->
+   object 'll' not found 
+After adding `ll <- 0` ->
+   tapes without error 
+
+==============================================================================
+C. Three codings of the AR(1) year effect
+==============================================================================
+Marginal NLL at one random parameter vector:
+         loop      dautoreg          gmrf 
+1843.21945297 1843.21945297 1843.21945297 
+seconds per marginal-likelihood evaluation:
+    loop.elapsed dautoreg.elapsed     gmrf.elapsed 
+           6e-04            6e-04            7e-04 
+AR(1) fit: NLL = 1650.680 | phi = 0.544 | sigma_time = 0.574 | sigma_re = 0.202 | conv = 0 | pdHess = TRUE | max|grad| = 0.001
+Hierarchical model without year effect: NLL = 1883.810  => year effect improves the marginal log-likelihood by 233.1 for 3 parameters
+
+==============================================================================
+D. obj$report() after nlminb(): last.par vs last.par.best
+==============================================================================
+max |last.par - last.par.best| immediately after nlminb(): 0 
+max |mu from obj$report() - mu from obj$report(last.par.best)|: 0 
+after one further obj$fn() call elsewhere: max |mu from obj$report() - mu at the optimum| = 1.36 
+=> always pass the parameters explicitly: obj$report(obj$env$last.par.best).
+
+==============================================================================
+E. ML vs REML
+==============================================================================
+                  ML   ML * sqrt(n/(n-1)) REML (random = 'mu') 
+           0.8230380            0.8313940            0.8313939 
+               sd(x) 
+           0.8313939 
+  sigma_re_ML sigma_re_REML         ratio   sqrt(19/18) 
+    0.1056484     0.1270103     1.2021983     1.0274023 
+
+==============================================================================
+F. checkConsistency() on the hierarchical model (Laplace is EXACT for this normal-normal model)
+==============================================================================
+simulated random effects and observations (mean over 400 simulations):
+          sd_re          mean_z            sd_z fitted sigma_re 
+         0.1039          0.0000          0.9993          0.1056 
+=> sd(re) matches sigma_re and the standardised observation errors are N(0,1): the simulation is right.
+
+number of fixed effects tested: 40 
+Default call on the slide, checkConsistency(obj) with n = 100 simulations, five seeds:
+     seed s$marginal$p.value Hotelling-corrected p
+[1,]    1           4.35e-03                 0.464
+[2,]    2           2.38e-01                 0.887
+[3,]    3           1.78e-03                 0.391
+[4,]    4           2.69e-02                 0.643
+[5,]    5           5.49e-06                 0.119
+With n = 4000 simulations: s$marginal$p.value = 0.247 | Hotelling-corrected p = 0.264 
+largest |estimated bias| / standard error over the fixed effects (n = 4000): 0.0393 
+
+==============================================================================
+G. Hessian sparsity: states vs innovations for a random-walk year effect
+==============================================================================
+non-zeros in the random-effect Hessian (lower triangle), n = 75 years:
+        states    innovations dense_would_be 
+           149           2850           2850 

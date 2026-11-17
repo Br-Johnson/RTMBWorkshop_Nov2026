@@ -38,10 +38,11 @@ library(RTMB)
 
 sox$stock <- as.numeric(factor(sox$PopName))
 nstocks <- max(sox$stock)
+set.seed(1)   ## random but reproducible starting values, in a plausible range
 parameters <- list(
-  alpha = runif(nstocks, 2, 5),
-  logbeta = runif(nstocks, 0, 1),
-  logsigma = runif(nstocks, 3, 5)
+  alpha = runif(nstocks, 1, 3),
+  logbeta = runif(nstocks, -1, 0),
+  logsigma = runif(nstocks, -0.5, 0.5)
 )
 
 sox$logRS <- log(sox$recruits/sox$spawners)
@@ -60,12 +61,13 @@ obj <- MakeADFun(func = negll, parameters = parameters, silent = TRUE)
 
 - Find minimum negative log likelihood
 - Use `nlminb` by default and pass initial values, function, and gradient.
+- `nlminb` gives up after 150 iterations or 200 function evaluations unless told otherwise.
 
 ```{r}
 #| echo: true
 
-par_init <- obj$par + rnorm(length(obj$par))
-mle <- nlminb(par_init, obj$fn, obj$gr)
+par_init <- obj$par + rnorm(length(obj$par), 0, 0.5)
+mle <- nlminb(par_init, obj$fn, obj$gr, control = list(eval.max = 1e4, iter.max = 1e4))
 
 ## relist everything for convenience to access parameters by name
 parList <- obj$env$parList(mle$par)
@@ -95,33 +97,75 @@ mle$message
 max(abs(obj$gr(mle$par)))
 ```
 
-- Hessian should be positive definite. This one will be obvious if the variance can be computed.
+- Hessian should be positive definite: every eigenvalue positive. Being able to invert it is not enough.
 ```{r}
 #| echo: true
 
-## solve(obj$he(mle$par))
+min(eigen(obj$he(mle$par), symmetric = TRUE)$values)
 ```
 
 
 ## Convergence
 
 - If you are very thorough, you will try multiple starting points and make sure they all end up the same.
+- Count the starts that fail. Quietly dropping them hides exactly the problem you are looking for.
 
-::: {#my-long-container style="height: 200px; border: 1px solid #ccc;"}
+::: {#my-long-container style="height: 300px; border: 1px solid #ccc;"}
 ```{r}
 #| echo: true
 
 nll <- NULL
-pars <- NULL
+nfail <- 0
 for( i in 1:50 ){
-  par_init <- rnorm(length(obj$par), 0, 3)
-  mle <- nlminb(par_init, obj$fn, obj$gr)
-  if(mle$convergence == 0){
-    pars <- cbind(pars, mle$par)
-    nll <- c(nll, mle$objective)
+  par_init <- mle$par + rnorm(length(mle$par), 0, 1)
+  mle_i <- nlminb(par_init, obj$fn, obj$gr, control = list(eval.max = 1e4, iter.max = 1e4))
+  if(mle_i$convergence == 0){
+    nll <- c(nll, mle_i$objective)
+  }else{
+    nfail <- nfail + 1
   }
 }
-max(nll) - min(nll)
+nfail                 ## starts that did not converge
+max(nll) - min(nll)   ## spread of the ones that did
+```
+:::
+
+## Putting the Checks Together
+
+- A small wrapper saves repeating these checks for every model.
+- Newton steps polish the optimum. `optimHess` is used because it also works when there are random effects.
+
+::: {#my-long-container style="height: 500px; border: 1px solid #ccc;"}
+```{r}
+#| echo: true
+
+fit_rtmb <- function(obj, newton_steps = 2){
+  opt <- nlminb(obj$par, obj$fn, obj$gr, control = list(eval.max = 1e4, iter.max = 1e4))
+  for( i in seq_len(newton_steps) ){
+    g <- as.numeric(obj$gr(opt$par))
+    h <- optimHess(opt$par, obj$fn, obj$gr)
+    step <- try(solve(h, g), silent = TRUE)
+    if(inherits(step, "try-error")) break
+    new_obj <- obj$fn(opt$par - step)
+    if(is.finite(new_obj) && new_obj <= opt$objective){   ## keep a step only if it helps
+      opt$par <- opt$par - step
+      opt$objective <- new_obj
+    }else break
+  }
+  obj$fn(opt$par)   ## so that the best parameters are also the last ones evaluated
+  sdr <- sdreport(obj, par.fixed = opt$par)
+  se <- suppressWarnings(sqrt(diag(sdr$cov.fixed)))
+  eig <- eigen(optimHess(opt$par, obj$fn, obj$gr), symmetric = TRUE, only.values = TRUE)$values
+  checks <- c(nlminb_code_0 = opt$convergence == 0,
+              small_gradient = max(abs(sdr$gradient.fixed)) < 1e-3,
+              hessian_pos_def = all(eig > 0),
+              finite_se = all(is.finite(se)))
+  list(opt = opt, sdr = sdr, checks = checks)
+}
+
+checked <- fit_rtmb(obj)
+checked$checks
+max(abs(checked$sdr$gradient.fixed))
 ```
 :::
 
@@ -129,7 +173,7 @@ max(nll) - min(nll)
 
 - `REPORT` to return value of variable
 - `ADREPORT` to include uncertainty of variable
-- `sdeport` will return standard deviations of parameters
+- `sdreport` will return standard deviations of parameters
 - `as.list` of `sdreport` object will create a list of the parameters.
 
 ```{r}
@@ -139,18 +183,21 @@ negll <- function(pars){
   getAll(pars)
   beta <- exp(logbeta)
   sigma <- exp(logsigma)
-  beta_real <- beta*transform_beta
+  beta_real <- beta/sd_by_stock   ## back to the scale of unscaled spawners
   ADREPORT(beta)
+  ADREPORT(beta_real)
   mu <- alpha[sox$stock] - beta[sox$stock]*sox$spawners_scaled
   -sum(dnorm(sox$logRS, mu, sigma[sox$stock], log = TRUE))
 }
-transform_beta <- sox$spawners/sox$sd_spawners
+## We fitted to spawners_scaled = spawners/sd_spawners, so beta_real = beta/sd (one sd per stock)
+sd_by_stock <- as.numeric(tapply(sox$sd_spawners, sox$stock, unique))
 
 obj <- MakeADFun(negll, parameters, silent = TRUE)
-fit <- nlminb(obj$par, obj$fn, obj$gr)
+fit <- nlminb(obj$par, obj$fn, obj$gr, control = list(eval.max = 1e4, iter.max = 1e4))
 sdr <- sdreport(obj, fit$par)
 res <- summary(sdr, "fixed")
 res_real <- summary(sdr, "report")
+res_real <- res_real[rownames(res_real) == "beta", ]   ## keep beta for the comparison below
 ```
 
 
@@ -216,11 +263,11 @@ max(abs(res_real[, "Std. Error"] - std_err_real[grepl("beta", names(obj$par))]))
 
 - Typical format of 95% confidence interval ('Wald')
   $$
-    \widehat{\beta} \pm z_{0.025} \, \text{sd}(\widehat{\alpha})
+    \widehat{\beta} \pm z_{0.025} \, \text{sd}(\widehat{\beta})
   $$
 - $z$ is a standard normal distribution. For a linear regression we know that the slope terms are $t$ distributed
 
-- Quantiles / confidence intervals are transformation invariant (i.e. you can just transform the CI to process for real scale)
+- You can transform the end points of an interval to another scale (quantiles are transformation invariant). But a Wald interval *computed* on another scale is a different interval: compare the two on the next slide.
 
 ::: {#my-long-container style="height: 200px; border: 1px solid #ccc;"}
 ```{r}
@@ -276,15 +323,16 @@ arrows(1:nbeta+0.25, low_r, 1:nbeta+0.25, high_r, length = 0.1, angle = 90, code
 ## Profile Confidence Interval
 
 - Best confidence interval but computationally demanding
-- Find 95% area under profile likelihood
 - Profile likelihood traverses a single parameter values, finds MLE for other values.
+- The 95% interval is every value whose negative log-likelihood is within `qchisq(0.95, 1)/2 = 1.92` of the minimum (a likelihood ratio test), not an area under the curve.
 - Takes into account skew of distribution etc.
 
 ```{r}
 #| echo: true
-prof <- TMB::tmbprofile(obj, name = 31, trace = FALSE)
+i_prof <- which(names(obj$par) == "logbeta")[12]   ## log(beta) of stock 12
+prof <- TMB::tmbprofile(obj, name = i_prof, trace = FALSE)
 plot(prof)
-abline(v = fit$par[31], col = 'red', lty = 2)
+abline(v = fit$par[i_prof], col = 'red', lty = 2)
 prof_int <- confint(prof)
 ```
 
@@ -303,6 +351,7 @@ arrows(1:3, c(low_tr[12], low_r[12], exp(prof_int[1])), 1:3,
 
 - Declare data as `OBS` to let RTMB recognize it as data.
 - Do a data update so that you don't have to retape each time `DataEval`
+- After changing the data call `obj$force.update()`: the tape does not notice by itself.
 
 ::: {#my-long-container style="height: 600px; border: 1px solid #ccc;"}
 ```{r}
@@ -314,28 +363,34 @@ negll <- function(pars){
   logRS <- OBS(logRS)
   beta <- exp(logbeta)
   sigma <- exp(logsigma)
-  beta_real <- beta[stock]*transform_beta
   REPORT(beta)
   mu <- alpha[stock] - beta[stock]*spawners_scaled
   logRS %~% dnorm(mu, sigma[stock]) ## Alternative way to define likelihood...
 }
 
 data <- list(stock = sox$stock, 
-  spawners_scaled = sox$spawners_scaled, 
-  transform_beta = sox$spawners/sox$sd_spawners
+  spawners_scaled = sox$spawners_scaled
   )
 boot <- list(logRS = sox$logRS)
 
 obj <- MakeADFun(negll, parameters, silent = TRUE)
-fit <- nlminb(obj$par, obj$fn, obj$gr)
+fit <- nlminb(obj$par, obj$fn, obj$gr, control = list(eval.max = 1e4, iter.max = 1e4))
 
+set.seed(2)
 boot.pars <- NULL
+nflag <- 0
 for( i in 1:1000 ){
   boot$logRS <- obj$simulate(fit$par)$logRS
-  newfit <- nlminb(obj$par, obj$fn, obj$gr)
+  obj$force.update()                  ## tell the tape that the data changed
+  newfit <- nlminb(fit$par, obj$fn, obj$gr, control = list(eval.max = 1e4, iter.max = 1e4))
+  nflag <- nflag + (newfit$convergence != 0)
   newbeta <- obj$report(newfit$par)$beta
   boot.pars <- cbind(boot.pars, newbeta)
 }
+boot$logRS <- sox$logRS; obj$force.update()   ## put the real data back
+## Refits flagged by nlminb. Look at them before deciding what to do: here they are all
+## cases where a stock's beta is estimated at zero, a real outcome, so they are kept.
+nflag
 boot.ci <- apply(boot.pars, 1, quantile, probs = c(0.025, 0.975) )
 
 plot(1:4, rep(beta[12], 4), ylim = c(-0.5, 1.5), pch = 16, xlab = "Interval Type", xaxt = "n")

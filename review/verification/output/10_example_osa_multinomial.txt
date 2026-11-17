@@ -1,0 +1,32 @@
+[setup] R 4.3.3 | RTMB 2.0 | TMB 1.9.25 | locale C.UTF-8
+
+==============================================================================
+A. Shape of the residual object
+==============================================================================
+dim(as.matrix(r$residual, nrow = np, ncol = 100)): 500 x 1  (as.matrix() has no nrow/ncol arguments; they are silently ignored)
+number of residuals left by osa[-np, ]: 499  (only element 5 is dropped)
+dim(matrix(r$residual, nrow = np, ncol = 100)): 5 x 100 | residuals left after dropping the last category: 400 
+
+==============================================================================
+B. The last-category residuals
+==============================================================================
+Given the first four counts and the total, the fifth count is known exactly, so its
+'residual' carries no information about fit (WHAM, for example, removes these).
+Values returned for the 100 last-category cells:
+    Min.  1st Qu.   Median     Mean  3rd Qu.     Max.     NA's 
+-0.73995 -0.45035 -0.20253 -0.22171 -0.03814  0.37244       92 
+number of non-finite values among them: 92 
+document's set: n = 499, non-finite = 91 | corrected set: n = 400, non-finite = 0
+corrected set: mean 0.000, sd 0.988, Shapiro-Wilk p = 0.073 (the model is true here)
+
+==============================================================================
+C. Power to detect over-dispersion (Dirichlet-multinomial data fitted with a multinomial)
+==============================================================================
+20 over-dispersed data sets; residual SD should be clearly above 1 if the check has power:
+sd_corrected  sd_document 
+       1.417        1.371 
+share of the 20 data sets in which Shapiro-Wilk rejects at 5%: corrected 0.4 | document 0.45 
+=> here the reshaping bug changes the diagnostic only slightly, because most last-category
+   residuals are returned as NaN and qqnorm() drops NaN silently; a handful of spurious
+   finite values remain in the document's plot. The code is still wrong and would matter
+   for any summary that does not drop NaN (mean(), sd(), acf()).
