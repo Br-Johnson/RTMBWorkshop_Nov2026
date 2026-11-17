@@ -1,0 +1,45 @@
+[setup] R 4.3.3 | RTMB 2.0 | TMB 1.9.25 | locale C.UTF-8
+
+==============================================================================
+A. Fit as written (default nlminb control, the document's random starting values)
+==============================================================================
+seed 1: NLL 1598.779 | convergence 1 (iteration limit reached without convergence (10)) | iterations 150 | smallest residual SD 0.0062 (Scotch Creek)
+seed 2: NLL 1599.093 | convergence 1 (iteration limit reached without convergence (10)) | iterations 150 | smallest residual SD 1e-06 (Scotch Creek)
+seed 3: NLL 1610.114 | convergence 1 (false convergence (8)) | iterations 141 | smallest residual SD 4e-07 (Seymour)
+continued (seed 1) with eval.max = iter.max = 1e4: NLL 1598.777 | convergence 1 (false convergence (8))
+pdHess: TRUE | max |gradient|: 0.000716 | number of NaN standard errors: 0 of 79 
+three smallest residual SDs:
+    Scotch Creek Upper Pitt River           Chilko 
+        1.77e-05         4.28e-01         5.46e-01 
+
+==============================================================================
+B. Factor loadings in the post-processing chunk
+==============================================================================
+`pList$logscale` (the name used in the document) works only through partial matching of `$`: TRUE | exact name is `logscale_z`
+second column, document vs model (first 6 stocks):
+         [,1]  [,2]  [,3]   [,4] [,5]   [,6]
+document    0 0.035 0.164 -0.221 0.08 -0.111
+model       0 0.074 0.214 -0.407 0.17 -0.129
+pairwise stock correlations: largest |document - model| = 0.425 | pairs whose sign differs: 29 of 171 
+
+==============================================================================
+C. What the 'covariance between stocks' leaves out
+==============================================================================
+shared year effect: stationary SD 0.659 (phi = 0.57). It adds the same covariance 0.434 to every pair of stocks.
+mean pairwise correlation: factors only (as in the document, corrected) = 0.047 | factors + shared year effect = 0.393 
+
+==============================================================================
+D. The 'penalised' refit with logpen estimated
+==============================================================================
+objective at the unpenalised optimum with penalty weight 1: 1725.899 
+after optimisation: logpen = -18.3 (weight 1.1e-08) | objective 1598.777 (unpenalised NLL 1598.777) | convergence 1 (false convergence (8))
+largest change in any loading relative to the unpenalised fit: 0.0108 
+=> as in the GAM example, a penalty weight that is itself minimised over goes to zero.
+fixed-strength penalties: convergence 0 | pdHess TRUE | smallest residual SD 0.189 (Scotch Creek) | NaN SEs: 0
+
+==============================================================================
+E. Loadings are identified only up to rotation
+==============================================================================
+The constraint lambda2[1] = 0 ties the axes to whichever stock is first alphabetically (Birkenhead).
+share of loading variance on factor 1 / factor 2: as estimated 0.62 / 0.38 | after varimax rotation 0.48 / 0.52 
+L %*% t(L) is unchanged by rotation: max |difference| = 4.44e-16 

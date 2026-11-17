@@ -1,0 +1,34 @@
+[setup] R 4.3.3 | RTMB 2.0 | TMB 1.9.25 | locale C.UTF-8
+years in the smooth: 75 
+basis columns: 9 | rank of penalty matrix S: 8 (the unpenalised null space has dimension 1 )
+
+==============================================================================
+A. The penalised model exactly as written in examples/GAM.qmd
+==============================================================================
+loglambda at the reported optimum: -22.1 -> lambda = 2.53e-10 
+convergence: 0 | relative convergence (4) | objective 1745.687 
+penalty term lambda/2 * b'Sb at that point: 1.47e-07 
+objective with lambda fixed at exp(-30) (no smoothing): 1745.687 
+max |fitted year effect: 'penalised' - unpenalised| = 2.9e-06 
+=> the penalty is >= 0 and vanishes as lambda -> 0, so minimising over lambda removes it.
+   lambda is only estimable after the coefficients are integrated out (and the
+   normalising term of their Gaussian 'prior' is kept).
+
+==============================================================================
+B. Mixed-model form checked against mgcv (common residual SD so the models are identical)
+==============================================================================
+smooth2random: fixed columns = 1 | random columns = 8 
+max |smooth from RTMB - smooth from mgcv::gam(method = 'ML')| after centring both = 1.51e-05 (range of the smooth: -1.2 to 0.64 )
+residual SD: RTMB 1.0036 | mgcv 1.0005 (ML scale)   | effective df of s(time) in mgcv: 8.64 
+log-likelihood: RTMB (Laplace, ML) -1791.904 | mgcv ML score -1791.89 
+
+==============================================================================
+C. The workshop's model with the smooth done properly
+==============================================================================
+time to build the model object: element-by-element loop (as written) 0.11 s | vectorised 0.03 s
+convergence 0 | pdHess TRUE | marginal NLL 1771.09 | SD of penalised spline coefficients 10.781 
+roughness (sum of squared second differences) of the fitted year effect:
+as_written_unpenalised       smooth2random_ML 
+                0.0536                 0.0414 
+for reference, marginal NLL of the AR(1) year-effect model from Module 5 on the same data: 1650.68
+(see 03_module5_random_effects.R) - a smooth trend cannot capture year-to-year shocks shared by all stocks.

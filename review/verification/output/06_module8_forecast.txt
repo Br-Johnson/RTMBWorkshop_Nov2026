@@ -1,0 +1,170 @@
+[setup] R 4.3.3 | RTMB 2.0 | TMB 1.9.25 | locale C.UTF-8
+
+==============================================================================
+A. Byte-order mark in the covariate file
+==============================================================================
+first three bytes of the file: ef bb bf (ef bb bf = UTF-8 BOM)
+  LC_CTYPE = C        first column is named 'X...yr' -> left_join(covariates, by = "yr") FAILS
+  LC_CTYPE = C.UTF-8  first column is named 'yr' -> left_join(covariates, by = "yr") works
+  read.csv(..., fileEncoding = "UTF-8-BOM") gives 'yr' in every locale.
+
+==============================================================================
+B. Is `recruits` consistent with the age columns?
+==============================================================================
+main age classes by stock:
+
+  c(2) c(3,4) c(4,5) 
+     1      1     18 
+rows compared: 1216 | rows where `recruits` is within 1% of the sum of the main age classes: 1194 | rows that differ by more than 1%: 22 
+brood years of the rows that differ:
+
+2004 2012 2018 2019 
+   1    1   18    2 
+number of stocks affected in brood year 2018: 18 of 19 
+largest discrepancies (rel = recruits / sum of main age classes - 1):
+          PopName   yr   age3   age4   age5 recruits   rel
+     Late Shuswap 2012 0.0000 0.0002 0.0000   0.0000 -1.00
+           Cultus 2018 0.0000 0.0018 0.0001   0.0003 -0.83
+         Harrison 2019 0.0183 0.0332 0.0000   0.0095 -0.81
+ Upper Pitt River 2018 0.0000 0.0081 0.0206   0.0059 -0.79
+           Nadina 2018 0.0005 0.5120 0.1609   0.3289 -0.51
+         Stellako 2018 0.0000 0.2003 0.0425   0.1289 -0.47
+             Raft 2018 0.0000 0.0062 0.0037   0.0063 -0.37
+     Fennel Creek 2018 0.0000 0.0076 0.0004   0.0066 -0.17
+Stellako, brood year 2018 (used in Module 8): age4 = 0.200345 | age5 = 0.042456 | recruits = 0.128932 
+=> Modules 3-7 model log(recruits/spawners); Module 8 models age4 and age5. For brood year 2018
+   the two are not the same data.
+covariate columns are in raw units (not z-scores):
+     peak aflow mapsst jnesst   pdo stn2js
+mean 8.75  2.02   8.94  15.22 -0.20  30.91
+sd   1.69  0.62   0.82   1.19  1.01   0.38
+
+==============================================================================
+C. 'Adding Covariates' as written
+==============================================================================
+columns of X: (Intercept), peak, aflow, mapsst, pdo, stn2js 
+nlminb as on the slide (default control): convergence = 0 | relative convergence (4) | iterations 42 
+with eval.max = iter.max = 1e4:           convergence = 0 | relative convergence (4) | iterations 42 | NLL 208.1826 
+eigenvalues of the Hessian (smallest three): 8.82, 0.0151, -2.75e-12 
+direction of the (near-)zero eigenvalue:
+ alpha  alpha      a 
+ 0.577  0.577 -0.577 
+sdreport(obj)$pdHess: TRUE 
+standard errors reported for alpha[1], alpha[2], a[1] (intercept): NaN, NaN, NaN 
+=> a[1] (the '(Intercept)' column of X) and alpha[1], alpha[2] enter only through a[1]+alpha[1] and
+   a[1]+alpha[2]: three parameters for two identifiable quantities.
+
+Identifiable version (no intercept in the covariate matrix, covariates standardised):
+  NLL 208.1826 (as written: 208.1826 ) | pdHess TRUE | iterations 46 | condition number of Hessian 41.8 
+  covariate effects per 1 SD (estimate, SE, z):
+       Estimate Std. Error      z
+peak     -0.012      0.115 -0.106
+aflow     0.057      0.114  0.496
+mapsst   -0.316      0.132 -2.398
+pdo       0.064      0.125  0.512
+stn2js    0.084      0.115  0.730
+  no-covariate model NLL 211.940; 5 covariates lower it by 3.758 -> AIC changes by +2.48
+
+==============================================================================
+D. Sensitivity to the constant added before taking logs
+==============================================================================
+Stellako: 1 zero age-5 values of 73; smallest positive age-5 = 0.002187 (millions)
+     const alpha5 sigma5_marginal   phi age5_forecast total_forecast
+[1,] 1e-06 0.0216           1.540 0.204        0.0160          0.359
+[2,] 1e-05 0.0467           1.340 0.262        0.0161          0.359
+[3,] 1e-04 0.0768           1.180 0.330        0.0163          0.360
+[4,] 1e-03 0.1540           1.030 0.398        0.0174          0.363
+[5,] 1e-02 0.5480           0.766 0.438        0.0261          0.391
+Quesnel: 24 zero age-5 values of 72; smallest positive age-5 = 0.000023 (millions)
+     const alpha5 sigma5_marginal      phi age5_forecast total_forecast
+[1,] 1e-06 -2.460            2.65 -0.15400      3.02e-05          0.417
+[2,] 1e-05 -1.650            2.08  0.00551      9.88e-05          0.428
+[3,] 1e-04 -0.770            1.92  0.22500      3.31e-04          0.461
+[4,] 1e-03  0.251            2.13  0.50900      1.26e-03          0.598
+[5,] 1e-02  1.540            2.53  0.79900      5.29e-03          1.140
+Late Shuswap: 19 zero age-5 values of 73; smallest positive age-5 = 0.000001 (millions)
+     const  alpha5 sigma5_marginal     phi age5_forecast total_forecast
+[1,] 1e-06 -3.8300            3.10 -0.1120      2.06e-07         0.0998
+[2,] 1e-05 -3.1400            2.51 -0.0224      5.00e-07         0.1110
+[3,] 1e-04 -2.3800            2.19  0.1450      1.55e-06         0.1270
+[4,] 1e-03 -1.4000            2.24  0.3790      1.74e-05         0.1530
+[5,] 1e-02 -0.0276            2.60  0.6400      2.25e-03         0.2300
+
+==============================================================================
+E. Median vs mean forecast (Stellako, no covariates, as on the slide)
+==============================================================================
+age-4 piece: median 0.3435, mean 0.5342 (x 1.555) | age-5 piece: median 0.0163, mean 0.0303 (x 1.862)
+slide's `pred` (sum of two medians) = 0.3598 | expected return = 0.5646 | ratio 1.57
+
+==============================================================================
+F. Retrospective evaluation, return years 2004-2025 (22 forecasts)
+==============================================================================
+non-converged refits (nlminb code != 0) out of 22:   slide_base = 0 | slide_cov = 0 | cov_fixed = 0 | cov_ridge = 0 | base_dist = 0 | rw = 0 
+largest |difference| between the slide's covariate forecasts and the identifiable version of the same model: 5.63e-06 (millions)
+
+Forecast skill, Stellako, 22 return years (units: millions of fish; MRE = mean raw error = bias):
+                                                  MRE   MAE  RMSE   MPE
+slide: age-structured Ricker                    0.144 0.241 0.329 1.961
+slide: + 5 covariates                           0.120 0.223 0.326 1.932
+5 covariates, ridge (random-effect) shrinkage   0.145 0.241 0.329 1.966
+age-structured Ricker, mean instead of median   0.338 0.412 0.449 3.348
+random-walk productivity (state-space)         -0.009 0.177 0.318 0.723
+naive R1C (return 4 years earlier)              0.051 0.211 0.379 0.809
+naive R2C (mean of 4 and 8 years earlier)       0.082 0.213 0.361 0.993
+naive RAC (mean of earlier same-cycle returns)  0.185 0.296 0.362 2.306
+naive TSA (mean of all earlier returns)         0.190 0.308 0.368 2.544
+                                               log_RMSE MASE_vs_R1C
+slide: age-structured Ricker                      1.079       1.140
+slide: + 5 covariates                             1.068       1.057
+5 covariates, ridge (random-effect) shrinkage     1.081       1.144
+age-structured Ricker, mean instead of median     1.387       1.953
+random-walk productivity (state-space)            0.892       0.839
+naive R1C (return 4 years earlier)                0.937       1.000
+naive R2C (mean of 4 and 8 years earlier)         0.892       1.011
+naive RAC (mean of earlier same-cycle returns)    1.201       1.404
+naive TSA (mean of all earlier returns)           1.267       1.461
+mean observed return over the 22 years: 0.266 
+
+Calibration of the forecast distributions (estimation + process uncertainty), 22 years:
+                                 inside 50% interval (expect 11)
+stationary age-structured Ricker                               6
+random-walk productivity                                      12
+                                 inside 80% interval (expect 17.6)
+stationary age-structured Ricker                                14
+random-walk productivity                                        15
+                                 below 10% point (expect 2.2)
+stationary age-structured Ricker                            8
+random-walk productivity                                    6
+                                 below median (expect 11)
+stationary age-structured Ricker                       21
+random-walk productivity                               14
+                                 above 90% point (expect 2.2)
+stationary age-structured Ricker                            0
+random-walk productivity                                    1
+mean 80% interval score (lower is better): stationary = 1.36 | random walk = 1.09 
+random-walk SD of log-productivity (tau_a) across the 22 refits: range 0 to 0.19 
+
+Forecast vs observed by year (millions):
+ year observed slide_ricker random_walk naive_R1C
+ 2004    0.678        0.808       0.808     0.692
+ 2005    0.273        0.565       0.565     0.245
+ 2006    0.308        0.756       0.756     0.561
+ 2007    0.059        0.440       0.335     0.277
+ 2008    0.228        0.444       0.208     0.678
+ 2009    0.040        0.596       0.308     0.273
+ 2010    0.406        0.488       0.144     0.308
+ 2011    0.196        0.232       0.070     0.059
+ 2012    0.286        0.451       0.195     0.228
+ 2013    0.166        0.191       0.088     0.040
+ 2014    1.552        0.493       0.282     0.406
+ 2015    0.171        0.310       0.207     0.196
+ 2016    0.054        0.366       0.225     0.286
+ 2017    0.115        0.375       0.196     0.166
+ 2018    0.399        0.425       0.279     1.552
+ 2019    0.086        0.369       0.197     0.171
+ 2020    0.058        0.151       0.065     0.054
+ 2021    0.137        0.324       0.138     0.115
+ 2022    0.228        0.461       0.220     0.399
+ 2023    0.158        0.236       0.107     0.086
+ 2024    0.104        0.186       0.086     0.058
+ 2025    0.156        0.364       0.186     0.137

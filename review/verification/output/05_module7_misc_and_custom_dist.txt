@@ -1,0 +1,60 @@
+[setup] R 4.3.3 | RTMB 2.0 | TMB 1.9.25 | locale C.UTF-8
+
+==============================================================================
+A. 'Passing Data to RTMB (Option 2)'
+==============================================================================
+start values passed to make_adfun(): 0.693147180559945, 1.5, -1 
+start values the object actually uses: 0, 0, 0  <- the global `param`, not the `pars` argument
+same call once the global `param` is gone: object 'param' not found 
+
+==============================================================================
+B. 'ADcontext' slide
+==============================================================================
+MakeADFun(pred_func, list(beta = c(0,0), logsigma = log(sigma))) ->
+   non-numeric argument to mathematical function 
+  (`sigma` is not defined at that point, so R finds the function stats::sigma)
+is ad_context exported by RTMB? FALSE 
+Warning message:
+In predict.lm(lm(dist ~ speed, cars), interval = "prediction") :
+  predictions on current data refer to _future_ responses
+
+mean width of the 95% prediction interval: simulated at the MLE (slide) = 59.1 | predict.lm = 63.1 
+  (the plug-in version ignores parameter uncertainty and uses the ML sigma, so it is narrower)
+
+==============================================================================
+C. rdirmulti(): Dirichlet draws
+==============================================================================
+                                      [,1]  [,2]  [,3]
+theory: alpha / sum(alpha)           0.038 0.192 0.769
+slide: rgamma(K, 1, alpha)           0.699 0.230 0.071
+correct: rgamma(K, shape = alpha, 1) 0.038 0.191 0.771
+With alpha = c(1,1,1) the two coincide, which is why the slide's own check passes.
+
+==============================================================================
+D. Dirichlet-multinomial likelihood
+==============================================================================
+objective as written at logalpha = 0: -23.07237  = -(sum of densities);  with log = TRUE: 520.8685 
+                         logalpha    logalpha   logalpha
+true alpha                   2.00        4.00        8.0
+as written (log = FALSE)     0.01 24689423.08 73695882.9
+with log = TRUE              2.61        4.75        9.1
+as-written fit: convergence = 1 | false convergence (8) 
+
+==============================================================================
+E. ddirmulti_osa() as written
+==============================================================================
+The `for (...)` line has no body, so R takes the NEXT statement as the loop body. Parsed as:
+for (a in 1:length(alpha - 1)) alpha0_sub <- sum(alpha_sub)
+and 1:length(alpha-1) is 1 2 3 (length of alpha, not 1:(length(alpha)-1) = 1 2 )
+
+==============================================================================
+F. What a %~% model returns
+==============================================================================
+objective: 373.9647 | direct: 373.9647  -> the hidden .nll is returned even though ADREPORT() is the last statement
+mixed function returns: 309.7112 | hand term only: 11.11635 | %~% term only: 309.7112 | both: 320.8276 
+=> the explicit return() is overridden: the hand-accumulated term is silently dropped.
+
+==============================================================================
+G. Uniform prior = bounds, not a density
+==============================================================================
+MLE of p with implicit Uniform(0,1) prior via logit transform: 0.35 | k/n = 0.35 

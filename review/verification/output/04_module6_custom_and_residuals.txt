@@ -1,0 +1,88 @@
+[setup] R 4.3.3 | RTMB 2.0 | TMB 1.9.25 | locale C.UTF-8
+
+==============================================================================
+A. 'Log Normal Distribution Cont...' + 'Checking Simulation' slides
+==============================================================================
+objective at the start values:  obj (taped with lognormal = TRUE) = 391.2101 | obj2 (taped with lognormal = FALSE) = 255.3998 
+difference = sum(log(RS)) = 135.8103  (the Jacobian term, constant in the parameters)
+Branch executed by obj$simulate() while the global flag is FALSE:
+dlognorm_branch    dnorm_branch 
+              0               1 
+=> `sim1` and `sim2` on the slide are both drawn through the dnorm(log(RS)) branch;
+   the custom dlognorm()/rlognorm() simulation code is never exercised by that check.
+
+With the flag set back to TRUE, obj$simulate() gives:
+   ERROR: A simulation can only be assigned to once! 
+Cause: dlognorm() calls dnorm(log(x), ...) BEFORE testing inherits(x, 'simref'). RTMB's dnorm()
+already simulates x through the log(); the explicit dGenericSim() call then tries to assign
+the same observation a second time.
+Corrected dlognorm2(): simulates without error; same draws as the dnorm(log(RS)) model with the
+ same seed: max |difference| = 0 
+dlognorm3() (no RTMB:::): objective 391.2101 | same draws as above: max |difference| = 0 
+
+==============================================================================
+B. Name clash: dlgamma
+==============================================================================
+RTMB exports dlgamma with arguments: x, shape, scale, log 
+slide's dlgamma(x, shape = 5, rate = 2)        = -0.5706538 
+RTMB::dlgamma(x, shape = 5, scale = 1/2)        = -0.5706538 
+RTMB::dlgamma(x, 5, 2) (positional, = scale 2)  = -1.952126  <- what a reader gets if the slide's definition is not in scope
+
+==============================================================================
+C. Built-in dlnorm() with OBS(): likelihood, simulation and OSA
+==============================================================================
+NLL with built-in dlnorm at the start values: 391.2101 (custom dlognorm: 391.2101 )
+obj$simulate() works with dlnorm: all simulated RS positive = TRUE | n = 74 
+OSA with dlnorm, method = 'oneStepGeneric', range = c(0, Inf): ok (residual mean 0.012, sd 1.026) 
+OSA with dlnorm, method = 'cdf': ERROR: Non-numeric argument to mathematical function 
+  (RTMB 2.0 has no AD version of plnorm(), which the 'cdf' method needs.)
+OSA with dnorm on OBS(log RS), method = 'cdf':          ok (residual mean -0.000, sd 1.007) 
+OSA with dnorm on OBS(log RS), method = 'fullGaussian': ok (residual mean -0.000, sd 1.007) 
+same parameter estimates either way: max |diff| = 2.95e-07 | NLL(dlnorm) - NLL(dnorm on logs) = 135.81 = sum(log RS) = 135.81 
+
+==============================================================================
+D. Jacobian of the additive log-ratio (multivariate logit) transform
+==============================================================================
+log|det J| from a tape + determinant(): 9.498022 
+closed form  -sum(log(p)):               9.498022 
+determinant() taped natively on an AD matrix: value = 0.6471032 | base R = 0.6471032 
+
+==============================================================================
+E. Poisson counts with a gamma-distributed rate (true shape = 5, rate = 1)
+==============================================================================
+                                  shape  rate mean     nll convergence
+exact negative binomial           3.986 0.745 5.35 257.690           0
+Laplace, Jacobian included        4.138 0.774 5.35 258.700           0
+Laplace, Jacobian omitted (wrong) 1.807 0.415 4.35 397.405           0
+(NA = the optimiser stopped with a NaN gradient. Without the Jacobian the implied density of
+ log(lambda) is not a gamma on lambda; it is improper as log(lambda) -> -Inf when shape <= 1.)
+
+==============================================================================
+F. OSA residuals for the Gaussian AR(1) sockeye model
+==============================================================================
+data order in the slides: sorted by stock, then year (first rows):
+       PopName   yr
+1 Early Stuart 1948
+2 Early Stuart 1949
+3 Early Stuart 1950
+                           method seconds    n max_abs_diff_vs_fullGaussian
+                     fullGaussian     2.8 1245                     0.00e+00
+                  oneStepGaussian    18.3 1245                     5.01e-05
+                              cdf    11.2 1245                     6.37e-03
+ oneStepGeneric (as on the slide)   150.4 1245                     7.34e-01
+oneStepGeneric vs the exact residuals: |difference| > 0.01 for 3 of 1245 observations, > 0.1 for 2 ; non-finite: 0 
+oneStepGeneric with an explicit finite `range`: 152.0 s | max |difference| 0.734 | > 0.01 for 3 observations
+fullGaussian residuals: mean -0.011, sd 1.000, Shapiro-Wilk p = 0.00149
+excess kurtosis of the OSA residuals: 0.69 | share with |z| > 3: 0.0056 (normal: 0.0027)
+same model, data sorted by year then stock: NLL difference = 9.35e-11 
+correlation between the two sets of OSA residuals (matched by stock-year): 0.938 
+=> both orderings give valid N(0,1) residuals, but they are different residuals; only the
+   time-ordered version has the 'predict this year from earlier years' interpretation.
+within-stock lag-1 correlation of the time-ordered OSA residuals: 0.161 (95% CI 0.106 to 0.215, n = 1221 pairs)
+per-stock lag-1 correlations (largest five):
+          Cultus             Raft Upper Pitt River     Scotch Creek 
+            0.49             0.32             0.32             0.30 
+      Birkenhead 
+            0.28 
+=> the shared year effect leaves stock-specific serial correlation that a QQ-plot cannot show.
+conditional (plug-in) standardized residuals, as on the 'Classic Residual Analysis' slide: sd = 0.968  (below 1 because the random effects are fitted to the same data)

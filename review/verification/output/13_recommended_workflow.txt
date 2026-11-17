@@ -1,0 +1,55 @@
+[setup] R 4.3.3 | RTMB 2.0 | TMB 1.9.25 | locale C.UTF-8
+
+==============================================================================
+A. Fitting helper on the AR(1) hierarchical Ricker
+==============================================================================
+single default nlminb() call as on the slides: relative convergence (4) | iterations 110 | max |gradient| 0.001 
+objective 1650.6797 | nlminb: relative convergence (4) | max |gradient| 5.39e-08 | smallest Hessian eigenvalue 0.00503
+checks passed:  nlminb_code_0, max_gradient_ok, hessian_pos_def, all_se_finite, no_huge_se 
+
+==============================================================================
+B. Process residuals from one joint sample of the random effects
+==============================================================================
+one draw (this is what you would plot):
+               sd_innov         shapiro_p_innov              lag1_innov 
+                  0.998                   0.000                  -0.208 
+first_half_minus_second               min_innov                sd_stock 
+                  0.552                  -3.804                   1.075 
+        shapiro_p_stock 
+                  0.395 
+
+the same summaries over 500 independent draws (to show the single-draw conclusions are not luck):
+     sd_innov shapiro_p_innov lag1_innov first_half_minus_second min_innov
+mean    1.006           0.004     -0.181                   0.575    -3.547
+sd      0.042           0.019      0.054                   0.045     0.333
+     sd_stock shapiro_p_stock
+mean    0.992           0.558
+sd      0.107           0.272
+share of draws in which Shapiro-Wilk rejects normality at 5%: year-effect innovations 0.99 | stock effects 0.02 
+expected SD of 'first half minus second half' if the innovations were iid N(0,1): 0.23 
+SD of the innovations computed from the conditional modes (shrunk towards zero): 0.93 
+brood year with the most negative year effect (conditional mode): 2015 | value -2.54 
+
+==============================================================================
+C. How well is the between-stock SD identified? Profile + simulate-and-refit (ML vs REML)
+==============================================================================
+ML estimate on the real data: sigma_re = 0.1056 | Wald 95% interval on the log scale: 0.024 to 0.459
+profile of the marginal NLL over sigma_re (difference from its minimum; 1.92 = edge of a 95% interval):
+            [,1] [,2] [,3]  [,4] [,5] [,6] [,7]
+sigma_re  0.0001 0.02 0.05 0.106 0.15 0.20 0.30
+delta_NLL 0.2800 0.26 0.16 0.000 0.18 0.83 3.14
+=> sigma_re = 0 is only 0.28 log-likelihood units worse than the estimate: the data barely distinguish 'no between-stock variation' from the fitted value.
+
+data generated with sigma_re = 0.106, 150 simulated data sets:
+                           ML REML_alpha0 REML_full
+mean_estimate           0.021       0.028     0.080
+median_estimate         0.000       0.000     0.083
+share_estimated_at_zero 0.793       0.740     0.280
+data generated with sigma_re = 0.300, 150 simulated data sets:
+                           ML REML_alpha0 REML_full
+mean_estimate           0.246       0.258     0.283
+median_estimate         0.247       0.259     0.282
+share_estimated_at_zero 0.033       0.033     0.000
+simulation time: 130 s
+REML_alpha0 integrates the common intercept only (random = c('re', 'alpha0'));
+REML_full also integrates the 19 slopes, written without exp() so the model is linear in them.

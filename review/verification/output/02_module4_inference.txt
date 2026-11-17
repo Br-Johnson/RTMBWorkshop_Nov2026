@@ -1,0 +1,106 @@
+[setup] R 4.3.3 | RTMB 2.0 | TMB 1.9.25 | locale C.UTF-8
+per-stock SD of spawners (millions): smallest 0.00354 ( Fennel Creek ) largest 0.606 ( Late Shuswap ) ratio 171 
+Reference NLL from 19 separate lm() fits: 1864.827 
+Stocks whose unconstrained OLS slope implies beta <= 0 (no compensation):  
+
+==============================================================================
+A. 'Transform Parameters' slide: beta_real <- beta * transform_beta
+==============================================================================
+length(beta) = 19 | length(transform_beta) = 1245 | length(beta_real) = 1245 
+Warning message:
+In beta * transform_beta :
+  longer object length is not a multiple of shorter object length
+transform_beta is identical to spawners_scaled: TRUE 
+=> a length-19 vector is silently recycled against one value per observation;
+   `beta_real` is never reported, and ADREPORT(beta) is still on the scaled-spawner scale.
+max relative difference between corrected beta_real and -slope of lm(logRS ~ spawners)
+   (stocks with positive OLS beta only): 0.000415 
+
+==============================================================================
+B. Starting values used on the slides
+==============================================================================
+Workshop inits (alpha~U(2,5), logbeta~U(0,1), logsigma~U(3,5)), default nlminb control, 50 seeds:
+  sigma implied by logsigma in (3,5): from 20.1 to 148.4  (observed sd of logRS = 1.21 )
+                message
+convergence_code iteration limit reached without convergence (10)
+               0                                                0
+               1                                                1
+                message
+convergence_code relative convergence (4)
+               0                       49
+               1                        0
+  NLL above the lm() reference:      Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+3.373e-09 2.985e-08 4.065e-08 1.296e-07 6.050e-08 4.100e-06 
+  max |gradient| at the reported optimum:      Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+0.0001641 0.0003475 0.0004860 0.0006224 0.0007539 0.0040661 
+
+Same starts with eval.max = iter.max = 1e4:
+                message
+convergence_code relative convergence (4)
+               0                       50
+  NLL above the lm() reference:      Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+3.373e-09 2.985e-08 3.932e-08 4.835e-08 5.975e-08 1.443e-07 
+
+Data-informed starts (alpha = mean(logRS), beta = 0.5, sigma = sd(logRS)), default control:
+  convergence 0 | relative convergence (4) | iterations 125 | NLL above reference 2.52e-08 | max|grad| 0.000857 
+
+Multi-start loop from the 'Convergence' slide (50 starts ~ N(0, 3^2), default control).
+The slide keeps a run only `if(mle$convergence == 0)` and reports max(nll) - min(nll)
+over the survivors. Runs that did NOT converge, for three different seeds:
+  seed 202: 48 of 50 dropped | function evaluation limit reached without convergence (9): 6; iteration limit reached without convergence (10): 42 
+  seed 203: 49 of 50 dropped | iteration limit reached without convergence (10): 49 
+  seed 204: 46 of 50 dropped | function evaluation limit reached without convergence (9): 2; iteration limit reached without convergence (10): 44 
+  seed 202 with eval.max = iter.max = 1e4: 0 of 50 dropped; range of NLL above reference among all 50: 9.35e-09 to 0.432 
+
+==============================================================================
+C. Profile-likelihood interval for parameter 31 (= logbeta[12])
+==============================================================================
+parameter 31 is logbeta for stock Portage 
+confint(prof): -1.9238 -0.2478 
+How confint.tmbprofile is defined (TMB source):
+{
+    i <- which.min(object$value)
+    left <- head(object, i)
+    right <- tail(object, nrow(object) - i)
+    hline <- 0.5 * qchisq(level, df = 1) + object$value[i]
+    lower <- approx(left[[2]], left[[1]], hline)$y
+    upper <- approx(right[[2]], right[[1]], hline)$y
+    ans <- t(c(lower = lower, upper = upper))
+    rownames(ans) <- names(object)[1]
+    ans
+}
+Warning message:
+In regularize.values(x, y, ties, missing(ties), na.rm = na.rm) :
+  collapsing to unique 'x' values
+                                       [,1]        [,2]
+likelihood-ratio cut (1.92 units) -1.923750 -0.24783027
+95% of area under profile         -1.820933 -0.34568379
+Wald on log scale                 -1.444354 -0.09448258
+confint() reproduces the likelihood-ratio cut, not the area definition.
+
+==============================================================================
+D. Bootstrap with DataEval (verbatim structure from the slide)
+==============================================================================
+simulated data differ from the observed data: TRUE 
+D1. slide's loop body vs a freshly taped object on the same simulated data:
+     objective difference = 0 | max |par diff| = 0 
+     (correct here only because nlminb's first evaluation is at a different point
+      from the tape's previous evaluation)
+D2. evaluate twice at the SAME parameter vector, changing the data in between:
+          before_change  after_change_no_update      after_force.update 
+               1829.639                1829.639                1854.201 
+direct_R_value_new_data 
+               1854.201 
+=> the tape returns the OLD data's value until obj$force.update() is called
+   (the remedy documented in ?DataEval since RTMB 1.8).
+
+==============================================================================
+E. An invertible Hessian is not necessarily positive definite
+==============================================================================
+H =
+           [,1]       [,2]
+[1,] -0.3333333  0.6666667
+[2,]  0.6666667 -0.3333333
+solve(H) works and its diagonal is positive: 1, 1 
+but the eigenvalues of H are: 0.333, -1  -> indefinite (a saddle point).
+Use eigen(H)$values > 0, or sdreport(obj)$pdHess, rather than 'solve() did not fail'.

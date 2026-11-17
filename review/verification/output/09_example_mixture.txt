@@ -1,0 +1,47 @@
+[setup] R 4.3.3 | RTMB 2.0 | TMB 1.9.25 | locale C.UTF-8
+
+==============================================================================
+A. The document's starting values
+==============================================================================
+data range: 33.3 to 87.2 
+five draws of the document's starting means, exp(rnorm(4, 3, 0.25)), sorted:
+     [,1] [,2] [,3] [,4]
+[1,] 15.1 16.1 21.0 29.9
+[2,] 18.9 19.7 20.8 24.0
+[3,] 19.4 22.3 25.7 33.0
+[4,] 11.3 15.5 18.2 31.4
+[5,] 20.3 22.4 25.0 25.9
+starting SD for every component: exp(2) = 7.39 
+=> all four components start below the smallest observation, 10-55 units from most of the data.
+From the document's starting values, 20 random draws (one data set):
+  direct NLL: min 381.93 | median 381.93 | max 381.93 
+  EM NLL:     min 346.47 | median 352.26 | max 355.66 | EM failures: 0 
+  NLL of a single normal fitted to all the data (what 'one component took everything' means): 381.93 
+
+==============================================================================
+B. Same sensible starting values for both algorithms, 50 simulated data sets
+==============================================================================
+EM failed outright (mixtools error) in 0 of 50 data sets
+direct NLL minus EM NLL over the rest:  equal within 0.01: 50 | direct lower (better): 0 | EM lower (better): 0 
+both end at or below the NLL of the TRUE parameters:  direct 50 of 50 | EM 50 of 50 
+median iterations: direct (quasi-Newton with AD gradient) 27 | EM 52 
+fits ending with a component SD below 0.3 (true SDs are 1.5-7): direct 0 | EM 0 
+
+==============================================================================
+C. The likelihood has no maximum: a component can collapse onto one observation
+==============================================================================
+  component 1 centred on x[1] with SD 1       -> NLL 407.54
+  component 1 centred on x[1] with SD 0.0001  -> NLL 404.37
+  component 1 centred on x[1] with SD 1e-08   -> NLL 395.16
+  component 1 centred on x[1] with SD 1e-30   -> NLL 344.50
+  component 1 centred on x[1] with SD 1e-100  -> NLL 183.32
+  NLL at the fitted (interior) solution: 346.47 
+=> the NLL falls without limit as that SD shrinks (about 2.3 units per factor of 10), so the
+   'maximum likelihood estimate' does not exist; optimisers (EM included) find local maxima.
+   The rendered document's own EM answer has a component with SD exp(-1.52) = 0.22.
+
+==============================================================================
+D. Numerical stability of log(sum(prob * dnorm()))
+==============================================================================
+naive  log(sum(prob * dnorm(x))) = -Inf 
+stable log-sum-exp of the log terms = -1873.986 

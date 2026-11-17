@@ -1,0 +1,11 @@
+[setup] R 4.3.3 | glmmTMB 1.1.8 | TMB 1.9.10
+
+glmmTMB, maximum likelihood:
+  -logLik = 1883.81 | between-stock SD = 0.1057 | intercept (alpha0) = 2.2487 
+  RTMB values from 03_module5_random_effects.R / 13_recommended_workflow.R: -logLik = 1883.8099, SD = 0.1056
+  all 19 fitted slopes negative (so the exp() constraint in the slides is not binding): TRUE 
+
+glmmTMB, REML (all fixed effects integrated out):
+  between-stock SD = 0.1815  (ML: 0.1057 -> ratio 1.72 )
+
+profile-likelihood 95% interval for the between-stock SD (ML fit): 0 (no lower limit found) to 0.252 

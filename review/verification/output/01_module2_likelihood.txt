@@ -1,0 +1,35 @@
+[setup] R 4.3.3 | RTMB 2.0 | TMB 1.9.25 | locale C.UTF-8
+
+==============================================================================
+A. `negloglik` on the 'Writing a Likelihood in RTMB' slide
+==============================================================================
+value returned at (mu = 0, logsigma = 0):    -625.8469 
+true NEGATIVE log-likelihood at that point: 625.8469 
+=> the function returns the log-likelihood itself; minimising it maximises the NLL.
+
+nlminb on the slide's function:
+            mu          sigma      objective    convergence 
+ -2.844307e+01  7.700455e-148 -4.108753e+298   0.000000e+00 
+message: X-convergence (3) 
+
+nlminb on the corrected function (single minus sign):
+         mu       sigma   objective convergence 
+   2.502241    4.115193  141.681177    0.000000 
+closed form: mean(x) = 2.502241   ML sd = 4.11519 
+
+==============================================================================
+B. What does the taped 'looped' benchmark function contain?
+==============================================================================
+Tape of the 1000-iteration loop:
+OpName:  Node:       Value:       Deriv:       Index:    Inputs:
+  InvOp      0            1           NA            0
+ConstOp      1     -3069.18           NA            1
+  MulOp      2     -3069.18           NA            2    0 1
+  DepOp      3     -3069.18           NA            3    2
+
+The loop never touches the tape input `a`, so all 1000 density evaluations are
+done once in R while taping and stored as a single constant. The benchmark
+therefore times `constant * a`, not a compiled loop.
+
+Operations on the tape when the loop depends on the parameter: 10001 
+mean time per call: plain R loop 4500.0 microsec | taped loop 23.0 microsec
